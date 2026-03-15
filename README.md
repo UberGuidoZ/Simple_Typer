@@ -1,5 +1,6 @@
 # Simple Typer
-Simple Typer shows a list of customizable buttons. Click a button to type the stored keystrokes into whatever window had focus before clicking the button.
+Simple Typer shows a list of customizable buttons with optional organization.<br>
+Click a button to type the stored keystrokes into whatever window previously had focus.
 
 Features:
  *   INI-configured buttons; each button types text into the last focused window
