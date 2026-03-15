@@ -1,5 +1,5 @@
 /*
- * simple_typer.c - Simple Typer v2.11
+ * simple_typer.c - Simple Typer v2.20
  *
  * Each button types its stored text into whatever window had focus
  * before the launcher was clicked.
@@ -24,7 +24,7 @@
  *   - Keyboard shortcuts - optional global hotkey per button
  *   - Multiple profiles - switchable INI sets from tray or Profiles menu
  *   - System key tokens - {tab} {enter} {esc} etc. send keystrokes mid-text
- *   - Version 2.11
+ *   - Version 2.20
  *
  * Compile:
  *
@@ -240,22 +240,22 @@ static const char  *g_infoDlgContent = NULL;
 /* ── System-key token table ──────────────────────────────────────────── */
 /* Tokens the user can embed in button text to send a keystroke.          */
 static const struct { const char *tok; int tokLen; int vk; } g_keyTokens[] = {
-    {"{tab}",        5,  VK_TAB},
-    {"{enter}",      7,  VK_RETURN},
-    {"{return}",     8,  VK_RETURN},
-    {"{esc}",        5,  VK_ESCAPE},
-    {"{escape}",     8,  VK_ESCAPE},
-    {"{backspace}", 11,  VK_BACK},
-    {"{delete}",     8,  VK_DELETE},
-    {"{del}",        5,  VK_DELETE},
-    {"{up}",         4,  VK_UP},
-    {"{down}",       6,  VK_DOWN},
-    {"{left}",       6,  VK_LEFT},
-    {"{right}",      7,  VK_RIGHT},
-    {"{home}",       6,  VK_HOME},
-    {"{end}",        5,  VK_END},
-    {"{pgup}",       6,  VK_PRIOR},
-    {"{pgdn}",       6,  VK_NEXT},
+    {"{tab}",        (int)(sizeof("{tab}")       -1), VK_TAB},
+    {"{enter}",      (int)(sizeof("{enter}")     -1), VK_RETURN},
+    {"{return}",     (int)(sizeof("{return}")    -1), VK_RETURN},
+    {"{esc}",        (int)(sizeof("{esc}")       -1), VK_ESCAPE},
+    {"{escape}",     (int)(sizeof("{escape}")    -1), VK_ESCAPE},
+    {"{backspace}",  (int)(sizeof("{backspace}") -1), VK_BACK},
+    {"{delete}",     (int)(sizeof("{delete}")    -1), VK_DELETE},
+    {"{del}",        (int)(sizeof("{del}")       -1), VK_DELETE},
+    {"{up}",         (int)(sizeof("{up}")        -1), VK_UP},
+    {"{down}",       (int)(sizeof("{down}")      -1), VK_DOWN},
+    {"{left}",       (int)(sizeof("{left}")      -1), VK_LEFT},
+    {"{right}",      (int)(sizeof("{right}")     -1), VK_RIGHT},
+    {"{home}",       (int)(sizeof("{home}")      -1), VK_HOME},
+    {"{end}",        (int)(sizeof("{end}")       -1), VK_END},
+    {"{pgup}",       (int)(sizeof("{pgup}")      -1), VK_PRIOR},
+    {"{pgdn}",       (int)(sizeof("{pgdn}")      -1), VK_NEXT},
     {NULL, 0, 0}
 };
 
@@ -265,9 +265,9 @@ static const struct { const char *tok; int tokLen; int vk; } g_keyTokens[] = {
 #define MAX_FIRE_ACTIONS 64
 
 typedef struct {
-    int  type;           /* ACT_TEXT or ACT_KEY */
-    char text[MAX_TEXT]; /* used when type == ACT_TEXT */
-    int  vk;             /* used when type == ACT_KEY  */
+    int  type;              /* ACT_TEXT or ACT_KEY */
+    char text[1024];        /* used when type == ACT_TEXT; segments are always < full MAX_TEXT */
+    int  vk;                /* used when type == ACT_KEY  */
 } FireAction;
 
 static FireAction g_fireActions[MAX_FIRE_ACTIONS];
@@ -333,16 +333,19 @@ static void RegisterAllHotkeys(void)
 static void HotkeyToString(int mod, int vk, char *buf, int bufSize)
 {
     buf[0] = '\0';
-    if (!vk) { strcpy(buf, "(none)"); return; }
-    if (mod & MOD_CONTROL) strcat(buf, "Ctrl+");
-    if (mod & MOD_SHIFT)   strcat(buf, "Shift+");
-    if (mod & MOD_ALT)     strcat(buf, "Alt+");
+    if (!vk) { snprintf(buf, bufSize, "(none)"); return; }
+    if (mod & MOD_CONTROL) snprintf(buf + strlen(buf), bufSize - (int)strlen(buf), "Ctrl+");
+    if (mod & MOD_SHIFT)   snprintf(buf + strlen(buf), bufSize - (int)strlen(buf), "Shift+");
+    if (mod & MOD_ALT)     snprintf(buf + strlen(buf), bufSize - (int)strlen(buf), "Alt+");
     /* find key name */
     for (int i = 0; i < HK_KEY_COUNT; i++) {
-        if (g_hkVKs[i] == vk) { strcat(buf, g_hkNames[i]); return; }
+        if (g_hkVKs[i] == vk) {
+            snprintf(buf + strlen(buf), bufSize - (int)strlen(buf), "%s", g_hkNames[i]);
+            return;
+        }
     }
     /* fallback */
-    char tmp[8]; sprintf(tmp, "0x%02X", vk); strcat(buf, tmp);
+    snprintf(buf + strlen(buf), bufSize - (int)strlen(buf), "0x%02X", vk);
 }
 
 /* ── Tray ────────────────────────────────────────────────────────────── */
@@ -384,7 +387,7 @@ static void ScanProfiles(void)
     if (ls) *(ls + 1) = '\0'; else dir[0] = '\0';
 
     char pat[MAX_PATH];
-    sprintf(pat, "%styper_*.ini", dir);
+    snprintf(pat, MAX_PATH, "%styper_*.ini", dir);
     WIN32_FIND_DATA fd;
     HANDLE h = FindFirstFile(pat, &fd);
     if (h != INVALID_HANDLE_VALUE) {
@@ -396,7 +399,7 @@ static void ScanProfiles(void)
             char *dot = strrchr(nm, '.'); if (dot) *dot = '\0';
             if (!nm[0]) continue;
             strcpy(g_profileNames[g_profileCount], nm);
-            sprintf(g_profilePaths[g_profileCount], "%s%s", dir, fd.cFileName);
+            snprintf(g_profilePaths[g_profileCount], MAX_PATH, "%s%s", dir, fd.cFileName);
             g_profileCount++;
         } while (FindNextFile(h, &fd));
         FindClose(h);
@@ -520,6 +523,19 @@ static void LoadSettings(void)
     if (g_winWidth > 800) g_winWidth = 800;
     if (g_opacity  < 10)  g_opacity  = 10;
     if (g_opacity  > 100) g_opacity  = 100;
+
+    /* Clamp saved position to the current virtual screen so the window
+       never appears off-screen (e.g. after a monitor is disconnected). */
+    if (g_winX != -1 && g_winY != -1) {
+        int vx = GetSystemMetrics(SM_XVIRTUALSCREEN);
+        int vy = GetSystemMetrics(SM_YVIRTUALSCREEN);
+        int vw = GetSystemMetrics(SM_CXVIRTUALSCREEN);
+        int vh = GetSystemMetrics(SM_CYVIRTUALSCREEN);
+        if (g_winX < vx) g_winX = vx;
+        if (g_winY < vy) g_winY = vy;
+        if (g_winX > vx + vw - 50) g_winX = vx;   /* 50px minimum visible strip */
+        if (g_winY > vy + vh - 50) g_winY = vy;
+    }
 }
 
 static void LoadButtons(void)
@@ -615,7 +631,9 @@ static void CALLBACK WinEventProc(HWINEVENTHOOK hHook, DWORD event,
     HWND hwnd, LONG idObject, LONG idChild,
     DWORD dwEventThread, DWORD dwmsEventTime)
 {
-    if (hwnd && hwnd != g_hwndMain)
+    /* Only track top-level window focus changes, not sub-objects or
+       system-internal windows (UAC prompts, Task Manager, etc.) */
+    if (hwnd && hwnd != g_hwndMain && idObject == OBJID_WINDOW && idChild == CHILDID_SELF)
         g_prevWindow = hwnd;
 }
 
@@ -695,7 +713,8 @@ static void BuildFireActions(const char *text)
             for (int k = 0; g_keyTokens[k].tok && g_fireCount < MAX_FIRE_ACTIONS - 1; k++) {
                 int tl = g_keyTokens[k].tokLen;
                 if (ti + tl > tlen) continue;
-                char tmp[16]; int ci;
+                char tmp[32]; int ci;
+                if (tl >= (int)sizeof(tmp)) continue; /* token too long for buffer — skip */
                 for (ci = 0; ci < tl; ci++)
                     tmp[ci] = (char)tolower((unsigned char)text[ti + ci]);
                 tmp[tl] = '\0';
@@ -703,8 +722,8 @@ static void BuildFireActions(const char *text)
                     if (bi > 0 && g_fireCount < MAX_FIRE_ACTIONS) {
                         buf[bi] = '\0';
                         g_fireActions[g_fireCount].type = ACT_TEXT;
-                        strncpy(g_fireActions[g_fireCount].text, buf, MAX_TEXT - 1);
-                        g_fireActions[g_fireCount].text[MAX_TEXT - 1] = '\0';
+                        strncpy(g_fireActions[g_fireCount].text, buf, 1023);
+                        g_fireActions[g_fireCount].text[1023] = '\0';
                         g_fireActions[g_fireCount].vk = 0;
                         g_fireCount++; bi = 0;
                     }
@@ -726,8 +745,8 @@ static void BuildFireActions(const char *text)
     if (bi > 0 && g_fireCount < MAX_FIRE_ACTIONS) {
         buf[bi] = '\0';
         g_fireActions[g_fireCount].type = ACT_TEXT;
-        strncpy(g_fireActions[g_fireCount].text, buf, MAX_TEXT - 1);
-        g_fireActions[g_fireCount].text[MAX_TEXT - 1] = '\0';
+        strncpy(g_fireActions[g_fireCount].text, buf, 1023);
+        g_fireActions[g_fireCount].text[1023] = '\0';
         g_fireActions[g_fireCount].vk = 0;
         g_fireCount++;
     }
@@ -1564,6 +1583,30 @@ static void FireButton(int idx)
     FireNextAction();
 }
 
+/* ── Dark menu bar repaint (shared by WM_NCPAINT + WM_NCACTIVATE) ──── */
+static void RepaintMenuBar(HWND hwnd)
+{
+    HMENU hMenu = GetMenu(hwnd); int cnt = hMenu ? GetMenuItemCount(hMenu) : 0;
+    MENUBARINFO mbiBar = { sizeof(mbiBar) };
+    if (cnt <= 0 || !GetMenuBarInfo(hwnd, OBJID_MENU, 0, &mbiBar)) return;
+    RECT rcWin; GetWindowRect(hwnd, &rcWin);
+    HDC hdc = GetWindowDC(hwnd);
+    RECT rcBar = { mbiBar.rcBar.left - rcWin.left, mbiBar.rcBar.top - rcWin.top,
+                   mbiBar.rcBar.right - rcWin.left, mbiBar.rcBar.bottom - rcWin.top };
+    HBRUSH hbr = CreateSolidBrush(DK_MENU_BG); FillRect(hdc, &rcBar, hbr); DeleteObject(hbr);
+    SetBkMode(hdc, TRANSPARENT); SetTextColor(hdc, DK_TEXT);
+    HFONT hOld = (HFONT)SelectObject(hdc, (HFONT)GetStockObject(DEFAULT_GUI_FONT));
+    int n = sizeof(g_menuLabels) / sizeof(g_menuLabels[0]);
+    for (int i = 0; i < cnt && i < n; i++) {
+        MENUBARINFO mbi = { sizeof(mbi) };
+        if (!GetMenuBarInfo(hwnd, OBJID_MENU, i + 1, &mbi)) continue;
+        RECT rc2 = { mbi.rcBar.left - rcWin.left, mbi.rcBar.top - rcWin.top,
+                     mbi.rcBar.right - rcWin.left, mbi.rcBar.bottom - rcWin.top };
+        DrawText(hdc, g_menuLabels[i], -1, &rc2, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+    }
+    SelectObject(hdc, hOld); ReleaseDC(hwnd, hdc);
+}
+
 /* ── Main window proc ────────────────────────────────────────────────── */
 static LRESULT CALLBACK MainProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 {
@@ -1692,55 +1735,13 @@ static LRESULT CALLBACK MainProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
 
     case WM_NCPAINT: {
         LRESULT res = DefWindowProc(hwnd, msg, wParam, lParam);
-        if (g_darkMode) {
-            HMENU hMenu = GetMenu(hwnd); int cnt = hMenu ? GetMenuItemCount(hMenu) : 0;
-            MENUBARINFO mbiBar = { sizeof(mbiBar) };
-            if (cnt > 0 && GetMenuBarInfo(hwnd, OBJID_MENU, 0, &mbiBar)) {
-                RECT rcWin; GetWindowRect(hwnd,&rcWin);
-                HDC hdc = GetWindowDC(hwnd);
-                RECT rcBar = { mbiBar.rcBar.left-rcWin.left, mbiBar.rcBar.top-rcWin.top,
-                               mbiBar.rcBar.right-rcWin.left, mbiBar.rcBar.bottom-rcWin.top };
-                HBRUSH hbr = CreateSolidBrush(DK_MENU_BG); FillRect(hdc,&rcBar,hbr); DeleteObject(hbr);
-                SetBkMode(hdc,TRANSPARENT); SetTextColor(hdc,DK_TEXT);
-                HFONT hOld=(HFONT)SelectObject(hdc,(HFONT)GetStockObject(DEFAULT_GUI_FONT));
-                int n=sizeof(g_menuLabels)/sizeof(g_menuLabels[0]);
-                for (int i=0; i<cnt&&i<n; i++) {
-                    MENUBARINFO mbi={sizeof(mbi)};
-                    if(!GetMenuBarInfo(hwnd,OBJID_MENU,i+1,&mbi)) continue;
-                    RECT rc2={mbi.rcBar.left-rcWin.left,mbi.rcBar.top-rcWin.top,
-                              mbi.rcBar.right-rcWin.left,mbi.rcBar.bottom-rcWin.top};
-                    DrawText(hdc,g_menuLabels[i],-1,&rc2,DT_CENTER|DT_VCENTER|DT_SINGLELINE);
-                }
-                SelectObject(hdc,hOld); ReleaseDC(hwnd,hdc);
-            }
-        }
+        if (g_darkMode) RepaintMenuBar(hwnd);
         return res;
     }
 
     case WM_NCACTIVATE: {
         LRESULT res = DefWindowProc(hwnd, msg, wParam, lParam);
-        if (g_darkMode) {
-            HMENU hMenu = GetMenu(hwnd); int cnt = hMenu ? GetMenuItemCount(hMenu) : 0;
-            MENUBARINFO mbiBar = { sizeof(mbiBar) };
-            if (cnt > 0 && GetMenuBarInfo(hwnd, OBJID_MENU, 0, &mbiBar)) {
-                RECT rcWin; GetWindowRect(hwnd,&rcWin);
-                HDC hdc = GetWindowDC(hwnd);
-                RECT rcBar = { mbiBar.rcBar.left-rcWin.left, mbiBar.rcBar.top-rcWin.top,
-                               mbiBar.rcBar.right-rcWin.left, mbiBar.rcBar.bottom-rcWin.top };
-                HBRUSH hbr = CreateSolidBrush(DK_MENU_BG); FillRect(hdc,&rcBar,hbr); DeleteObject(hbr);
-                SetBkMode(hdc,TRANSPARENT); SetTextColor(hdc,DK_TEXT);
-                HFONT hOld=(HFONT)SelectObject(hdc,(HFONT)GetStockObject(DEFAULT_GUI_FONT));
-                int n=sizeof(g_menuLabels)/sizeof(g_menuLabels[0]);
-                for (int i=0; i<cnt&&i<n; i++) {
-                    MENUBARINFO mbi={sizeof(mbi)};
-                    if(!GetMenuBarInfo(hwnd,OBJID_MENU,i+1,&mbi)) continue;
-                    RECT rc2={mbi.rcBar.left-rcWin.left,mbi.rcBar.top-rcWin.top,
-                              mbi.rcBar.right-rcWin.left,mbi.rcBar.bottom-rcWin.top};
-                    DrawText(hdc,g_menuLabels[i],-1,&rc2,DT_CENTER|DT_VCENTER|DT_SINGLELINE);
-                }
-                SelectObject(hdc,hOld); ReleaseDC(hwnd,hdc);
-            }
-        }
+        if (g_darkMode) RepaintMenuBar(hwnd);
         return res;
     }
 
@@ -1980,7 +1981,7 @@ static LRESULT CALLBACK MainProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
 
         } else if(id==ID_HELP_ABOUT){
             ShowInfoDialog(hwnd,"About Simple Typer",
-                "Simple Typer\r\nVersion 2.11\r\n\r\n"
+                "Simple Typer\r\nVersion 2.20\r\n\r\n"
                 "Author:   UberGuidoZ\r\n"
                 "Contact:  https://github.com/UberGuidoZ");
 
@@ -2016,6 +2017,19 @@ static LRESULT CALLBACK MainProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
         if(g_hbrSearchDk){ DeleteObject(g_hbrSearchDk);  g_hbrSearchDk=NULL; }
         RemoveTrayIcon();
         FreeIcons();
+        /* If the app is closed while a paste timer is in flight, restore the
+           clipboard ourselves so the user's original content is not lost. */
+        KillTimer(hwnd, 1); KillTimer(hwnd, 2);
+        if (g_hOldClip) {
+            if (OpenClipboard(g_hwndMain)) {
+                EmptyClipboard();
+                SetClipboardData(CF_UNICODETEXT, g_hOldClip);
+                CloseClipboard();
+            } else {
+                GlobalFree(g_hOldClip);
+            }
+            g_hOldClip = NULL;
+        }
         SaveAll();
         if(g_hbrDkBg)  { DeleteObject(g_hbrDkBg);   g_hbrDkBg=NULL;   }
         if(g_hFont)    { DeleteObject(g_hFont);      g_hFont=NULL;     }
