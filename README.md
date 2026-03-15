@@ -27,6 +27,9 @@ Features:
 Main Window<br>
 ![Main Window](https://raw.githubusercontent.com/UberGuidoZ/Simple_Typer/refs/heads/main/Documentation/01-Main_Window.png)
 
+Add Button<br>
+![Add Button](https://raw.githubusercontent.com/UberGuidoZ/Simple_Typer/refs/heads/main/Documentation/05-Button_Add.png)
+
 Settings<br>
 ![Settings](https://raw.githubusercontent.com/UberGuidoZ/Simple_Typer/refs/heads/main/Documentation/02-Settings.png)
 
