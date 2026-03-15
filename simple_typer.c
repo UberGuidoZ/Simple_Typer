@@ -27,8 +27,7 @@
  *   - Version 2.20
  *
  * Compile:
- *
- *   cl typer.c typer.res /link user32.lib shell32.lib comdlg32.lib gdi32.lib dwmapi.lib comctl32.lib /subsystem:windows /out:simple_typer.exe
+ *   cl simple_typer.c simple_typer.res /link user32.lib shell32.lib comdlg32.lib gdi32.lib dwmapi.lib comctl32.lib /subsystem:windows /out:simple_typer.exe
  */
 
 #include <windows.h>
