@@ -18,12 +18,12 @@
  *   - Variables: {date} {time} {clipboard} expand automatically when typed
  *   - Fill-in-the-blank: {?} in button text pops a small input box first
  *   - Global text prefix and suffix appended to every button's output
- *   - Search/filter bar — type to instantly filter buttons by name
- *   - Compact mode — icon-only grid palette for a tiny always-on-top layout
- *   - Categories — collapsible group headers to organise buttons
- *   - Keyboard shortcuts — optional global hotkey per button
- *   - Multiple profiles — switchable INI sets from tray or Profiles menu
- *   - System key tokens — {tab} {enter} {esc} etc. send keystrokes mid-text
+ *   - Search/filter bar - type to instantly filter buttons by name
+ *   - Compact mode - icon-only grid palette for a tiny always-on-top layout
+ *   - Categories - collapsible group headers to organise buttons
+ *   - Keyboard shortcuts - optional global hotkey per button
+ *   - Multiple profiles - switchable INI sets from tray or Profiles menu
+ *   - System key tokens - {tab} {enter} {esc} etc. send keystrokes mid-text
  *   - Version 2.1
  *
  * Compile:
