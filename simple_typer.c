@@ -1,5 +1,5 @@
 /*
- * simple_typer.c - Simple Typer v2.1
+ * simple_typer.c - Simple Typer v2.11
  *
  * Each button types its stored text into whatever window had focus
  * before the launcher was clicked.
@@ -24,7 +24,7 @@
  *   - Keyboard shortcuts - optional global hotkey per button
  *   - Multiple profiles - switchable INI sets from tray or Profiles menu
  *   - System key tokens - {tab} {enter} {esc} etc. send keystrokes mid-text
- *   - Version 2.1
+ *   - Version 2.11
  *
  * Compile:
  *
@@ -1261,39 +1261,43 @@ static LRESULT CALLBACK AddDlgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lP
                      10,30,390,22,hwnd,(HMENU)IDC_NAME_EDIT,g_hInst,NULL);
         /* ── Text ── */
         CreateWindow("STATIC","Text to type:  (use {date} {time} {clipboard} {?})",WS_VISIBLE|WS_CHILD,
-                     10,62,390,18,hwnd,NULL,g_hInst,NULL);
+                     10,62,390,16,hwnd,NULL,g_hInst,NULL);
+        CreateWindow("STATIC","Keys: {tab} {enter} {esc} {backspace} {del}",WS_VISIBLE|WS_CHILD,
+                     10,78,390,16,hwnd,NULL,g_hInst,NULL);
+        CreateWindow("STATIC","{up} {down} {left} {right} {home} {end} {pgup} {pgdn}",WS_VISIBLE|WS_CHILD,
+                     10,94,390,16,hwnd,NULL,g_hInst,NULL);
         CreateWindow("EDIT",edit?bc->text:"",WS_VISIBLE|WS_CHILD|WS_BORDER|WS_TABSTOP|WS_VSCROLL|
                      ES_MULTILINE|ES_AUTOVSCROLL|ES_WANTRETURN,
-                     10,82,390,72,hwnd,(HMENU)IDC_TEXT_EDIT,g_hInst,NULL);
+                     10,114,390,72,hwnd,(HMENU)IDC_TEXT_EDIT,g_hInst,NULL);
         /* ── Icon ── */
         CreateWindow("BUTTON","Show icon",WS_VISIBLE|WS_CHILD|BS_AUTOCHECKBOX|WS_TABSTOP,
-                     10,164,120,20,hwnd,(HMENU)IDC_ICON_CHECK,g_hInst,NULL);
+                     10,196,120,20,hwnd,(HMENU)IDC_ICON_CHECK,g_hInst,NULL);
         if(edit&&bc->showIcon) SendDlgItemMessage(hwnd,IDC_ICON_CHECK,BM_SETCHECK,BST_CHECKED,0);
-        CreateWindow("STATIC","Icon file (.ico):",WS_VISIBLE|WS_CHILD,10,190,120,18,hwnd,NULL,g_hInst,NULL);
+        CreateWindow("STATIC","Icon file (.ico):",WS_VISIBLE|WS_CHILD,10,222,120,18,hwnd,NULL,g_hInst,NULL);
         CreateWindow("EDIT",edit?bc->iconPath:"",WS_VISIBLE|WS_CHILD|WS_BORDER|WS_TABSTOP|ES_AUTOHSCROLL,
-                     10,210,290,22,hwnd,(HMENU)IDC_ICON_PATH_EDIT,g_hInst,NULL);
+                     10,242,290,22,hwnd,(HMENU)IDC_ICON_PATH_EDIT,g_hInst,NULL);
         CreateWindow("BUTTON","Browse...",WS_VISIBLE|WS_CHILD|BS_PUSHBUTTON|WS_TABSTOP,
-                     310,210,90,22,hwnd,(HMENU)IDC_ICON_BROWSE,g_hInst,NULL);
+                     310,242,90,22,hwnd,(HMENU)IDC_ICON_BROWSE,g_hInst,NULL);
         /* ── Color ── */
         CreateWindow("BUTTON","Custom border color",WS_VISIBLE|WS_CHILD|BS_AUTOCHECKBOX|WS_TABSTOP,
-                     10,242,160,20,hwnd,(HMENU)IDC_BTN_COLOR_CHECK,g_hInst,NULL);
+                     10,274,160,20,hwnd,(HMENU)IDC_BTN_COLOR_CHECK,g_hInst,NULL);
         if(edit&&bc->hasColor) SendDlgItemMessage(hwnd,IDC_BTN_COLOR_CHECK,BM_SETCHECK,BST_CHECKED,0);
         CreateWindow("BUTTON","",WS_VISIBLE|WS_CHILD|BS_OWNERDRAW|WS_TABSTOP,
-                     178,240,36,22,hwnd,(HMENU)IDC_BTN_COLOR_BTN,g_hInst,NULL);
+                     178,272,36,22,hwnd,(HMENU)IDC_BTN_COLOR_BTN,g_hInst,NULL);
         /* ── Hotkey ── */
-        CreateWindow("STATIC","Hotkey:",WS_VISIBLE|WS_CHILD,10,274,50,18,hwnd,NULL,g_hInst,NULL);
+        CreateWindow("STATIC","Hotkey:",WS_VISIBLE|WS_CHILD,10,306,50,18,hwnd,NULL,g_hInst,NULL);
         CreateWindow("BUTTON","Ctrl",WS_VISIBLE|WS_CHILD|BS_AUTOCHECKBOX|WS_TABSTOP,
-                     65,272,50,20,hwnd,(HMENU)IDC_HK_CTRL,g_hInst,NULL);
+                     65,304,50,20,hwnd,(HMENU)IDC_HK_CTRL,g_hInst,NULL);
         CreateWindow("BUTTON","Shift",WS_VISIBLE|WS_CHILD|BS_AUTOCHECKBOX|WS_TABSTOP,
-                     120,272,55,20,hwnd,(HMENU)IDC_HK_SHIFT,g_hInst,NULL);
+                     120,304,55,20,hwnd,(HMENU)IDC_HK_SHIFT,g_hInst,NULL);
         CreateWindow("BUTTON","Alt",WS_VISIBLE|WS_CHILD|BS_AUTOCHECKBOX|WS_TABSTOP,
-                     180,272,45,20,hwnd,(HMENU)IDC_HK_ALT,g_hInst,NULL);
+                     180,304,45,20,hwnd,(HMENU)IDC_HK_ALT,g_hInst,NULL);
         /* Key combobox */
         HWND hCb = CreateWindow("COMBOBOX","",WS_VISIBLE|WS_CHILD|WS_TABSTOP|CBS_DROPDOWNLIST,
-                     230,270,100,200,hwnd,(HMENU)IDC_HK_KEY,g_hInst,NULL);
+                     230,302,100,200,hwnd,(HMENU)IDC_HK_KEY,g_hInst,NULL);
         for(int k=0; g_hkNames[k]; k++) SendMessage(hCb, CB_ADDSTRING, 0, (LPARAM)g_hkNames[k]);
         CreateWindow("BUTTON","Clear",WS_VISIBLE|WS_CHILD|BS_PUSHBUTTON|WS_TABSTOP,
-                     338,270,60,22,hwnd,(HMENU)IDC_HK_CLEAR,g_hInst,NULL);
+                     338,302,60,22,hwnd,(HMENU)IDC_HK_CLEAR,g_hInst,NULL);
 
         /* populate hotkey controls if editing */
         if(edit) {
@@ -1309,18 +1313,18 @@ static LRESULT CALLBACK AddDlgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lP
 
         /* ── Type checkboxes ── */
         CreateWindow("BUTTON","Separator (divider line)",WS_VISIBLE|WS_CHILD|BS_AUTOCHECKBOX|WS_TABSTOP,
-                     10,304,200,20,hwnd,(HMENU)IDC_SEP_CHECK,g_hInst,NULL);
+                     10,336,200,20,hwnd,(HMENU)IDC_SEP_CHECK,g_hInst,NULL);
         CreateWindow("BUTTON","Category header (collapsible group)",WS_VISIBLE|WS_CHILD|BS_AUTOCHECKBOX|WS_TABSTOP,
-                     10,328,270,20,hwnd,(HMENU)IDC_CAT_CHECK,g_hInst,NULL);
+                     10,360,270,20,hwnd,(HMENU)IDC_CAT_CHECK,g_hInst,NULL);
 
         if(edit&&bc->isSeparator) SendDlgItemMessage(hwnd,IDC_SEP_CHECK,BM_SETCHECK,BST_CHECKED,0);
         if(edit&&bc->isCategory)  SendDlgItemMessage(hwnd,IDC_CAT_CHECK,BM_SETCHECK,BST_CHECKED,0);
 
         /* ── Save / Cancel ── */
         CreateWindow("BUTTON",edit?"Save":"Add",WS_VISIBLE|WS_CHILD|BS_DEFPUSHBUTTON,
-                     220,358,85,28,hwnd,(HMENU)IDC_OK,g_hInst,NULL);
+                     220,390,85,28,hwnd,(HMENU)IDC_OK,g_hInst,NULL);
         CreateWindow("BUTTON","Cancel",WS_VISIBLE|WS_CHILD|BS_PUSHBUTTON,
-                     315,358,85,28,hwnd,(HMENU)IDC_CANCEL,g_hInst,NULL);
+                     315,390,85,28,hwnd,(HMENU)IDC_CANCEL,g_hInst,NULL);
 
         UpdateAddDlgFields(hwnd);
         return 0;
@@ -1803,7 +1807,7 @@ static LRESULT CALLBACK MainProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
             if(g_hwndDlg){ SetForegroundWindow(g_hwndDlg); return 0; }
             g_editIndex=g_ctxIndex; g_ctxIndex=-1;
             g_hwndDlg=CreateWindowEx(WS_EX_DLGMODALFRAME,"AddDlgClass","Edit Button",
-                WS_OVERLAPPED|WS_CAPTION|WS_SYSMENU, CW_USEDEFAULT,CW_USEDEFAULT,420,430,
+                WS_OVERLAPPED|WS_CAPTION|WS_SYSMENU, CW_USEDEFAULT,CW_USEDEFAULT,420,462,
                 hwnd,NULL,g_hInst,NULL);
             SetTitleBarDark(g_hwndDlg,g_darkMode);
             ShowWindow(g_hwndDlg,SW_SHOW); UpdateWindow(g_hwndDlg);
@@ -1976,7 +1980,7 @@ static LRESULT CALLBACK MainProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
 
         } else if(id==ID_HELP_ABOUT){
             ShowInfoDialog(hwnd,"About Simple Typer",
-                "Simple Typer\r\nVersion 2.1\r\n\r\n"
+                "Simple Typer\r\nVersion 2.11\r\n\r\n"
                 "Author:   UberGuidoZ\r\n"
                 "Contact:  https://github.com/UberGuidoZ");
 
@@ -1984,7 +1988,7 @@ static LRESULT CALLBACK MainProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
             if(g_hwndDlg){ SetForegroundWindow(g_hwndDlg); return 0; }
             g_editIndex=-1;
             g_hwndDlg=CreateWindowEx(WS_EX_DLGMODALFRAME,"AddDlgClass","Add Button",
-                WS_OVERLAPPED|WS_CAPTION|WS_SYSMENU, CW_USEDEFAULT,CW_USEDEFAULT,420,430,
+                WS_OVERLAPPED|WS_CAPTION|WS_SYSMENU, CW_USEDEFAULT,CW_USEDEFAULT,420,462,
                 hwnd,NULL,g_hInst,NULL);
             SetTitleBarDark(g_hwndDlg,g_darkMode);
             ShowWindow(g_hwndDlg,SW_SHOW); UpdateWindow(g_hwndDlg);
