@@ -1,7 +1,7 @@
 /*
- * simple_typer.c - Simple Typer v2.30
+ * simple_typer.c - Simple Typer v2.31
  *
- * Each button types its stored text into whatever window had focus before the launcher was clicked.
+ * Each button types its stored text into whatever window had focus before the button was clicked.
  *
  * Features:
  *   - INI-configured buttons; each button types text into the last focused window
@@ -23,7 +23,7 @@
  *   - Keyboard shortcuts - optional global hotkey per button
  *   - Multiple profiles - switchable INI sets from tray or Profiles menu
  *   - System key tokens - {tab} {enter} {esc} etc. send keystrokes mid-text
- *   - Version 2.30
+ *   - Version 2.31
  *
  * Compile:
  *   cl simple_typer.c simple_typer.res /link user32.lib shell32.lib comdlg32.lib gdi32.lib dwmapi.lib comctl32.lib /subsystem:windows /out:simple_typer.exe
@@ -86,6 +86,12 @@ static void WriteEscaped(FILE *f, const char *key, const char *val);
 #define COMPACT_BTN_SZ        28
 #define COMPACT_BTN_GAP       4
 #define ID_HOTKEY_BASE        500   /* RegisterHotKey IDs 500..563 */
+
+/* Timer IDs used in the clipboard-paste / key-fire sequencer */
+#define TIMER_PASTE    1   /* short delay before sending Ctrl+V */
+#define TIMER_RESTORE  2   /* delay before restoring saved clipboard */
+#define TIMER_KEY      3   /* short delay before sending a system key */
+#define TIMER_KEY_GAP  4   /* brief pause between consecutive actions */
 
 /* Dialog controls */
 #define IDC_NAME_EDIT         10
@@ -159,8 +165,8 @@ static void WriteEscaped(FILE *f, const char *key, const char *val);
 #define DK_SEP      RGB( 70,  70,  70)
 #define LT_SEP      RGB(160, 160, 160)
 #define DK_SEARCH   RGB( 40,  40,  40)
-#define DK_CAT_BG   RGB( 50,  75, 110)   /* category header — dark mode */
-#define LT_CAT_BG   RGB(200, 220, 245)   /* category header — light mode */
+#define DK_CAT_BG   RGB( 50,  75, 110)   /* category header - dark mode */
+#define LT_CAT_BG   RGB(200, 220, 245)   /* category header - light mode */
 #define DK_CAT_TEXT RGB(200, 225, 255)
 #define LT_CAT_TEXT RGB( 20,  50, 100)
 
@@ -236,6 +242,8 @@ static HBRUSH       g_hbrDkBtnPre = NULL;    /* cached DK_BTN_PRE fill brush */
 static HPEN         g_hpenDkBorder= NULL;    /* cached DK_BORDER outline pen */
 static HPEN         g_hpenDkSep   = NULL;    /* cached DK_SEP separator pen */
 static HPEN         g_hpenLtSep   = NULL;    /* cached LT_SEP separator pen */
+static HBRUSH       g_hbrCatDk    = NULL;    /* cached DK_CAT_BG category header brush */
+static HBRUSH       g_hbrCatLt    = NULL;    /* cached LT_CAT_BG category header brush */
 static HFONT        g_hFont       = NULL;
 static HFONT        g_hFontBold   = NULL;   /* bold font for category headers */
 static int          g_trayAdded   = 0;
@@ -287,11 +295,16 @@ static const struct { const char *tok; int tokLen; int vk; } g_keyTokens[] = {
 #define MAX_FIRE_ACTIONS 64
 
 typedef struct {
-    int  type;              /* ACT_TEXT or ACT_KEY */
-    char text[MAX_TEXT];    /* used when type == ACT_TEXT; sized to full MAX_TEXT to prevent truncation */
-    int  vk;                /* used when type == ACT_KEY  */
+    int   type;   /* ACT_TEXT or ACT_KEY */
+    char *text;   /* points into g_fireTextPool for ACT_TEXT; NULL for ACT_KEY */
+    int   vk;     /* used when type == ACT_KEY */
 } FireAction;
 
+/* All text segments from one button press share a single pool.
+   Sized at 2*MAX_TEXT to cover prefix + expanded text + suffix. */
+#define FIRE_POOL_SIZE (MAX_TEXT * 2)
+static char       g_fireTextPool[FIRE_POOL_SIZE];
+static int        g_fireTextPos = 0;   /* next free byte in g_fireTextPool */
 static FireAction g_fireActions[MAX_FIRE_ACTIONS];
 static int        g_fireCount  = 0;
 static int        g_fireIdx    = 0;
@@ -337,7 +350,7 @@ static void RecreateFont(void)
 /* ── Hotkeys ─────────────────────────────────────────────────────────── */
 static void UnregisterAllHotkeys(void)
 {
-    for (int i = 0; i < MAX_BUTTONS; i++)
+    for (int i = 0; i < g_count; i++)
         UnregisterHotKey(g_hwndMain, ID_HOTKEY_BASE + i);
 }
 
@@ -356,18 +369,20 @@ static void HotkeyToString(int mod, int vk, char *buf, int bufSize)
 {
     buf[0] = '\0';
     if (!vk) { snprintf(buf, bufSize, "(none)"); return; }
-    if (mod & MOD_CONTROL) snprintf(buf + strlen(buf), bufSize - (int)strlen(buf), "Ctrl+");
-    if (mod & MOD_SHIFT)   snprintf(buf + strlen(buf), bufSize - (int)strlen(buf), "Shift+");
-    if (mod & MOD_ALT)     snprintf(buf + strlen(buf), bufSize - (int)strlen(buf), "Alt+");
+    char *end = buf;
+    int   rem = bufSize;
+    if (mod & MOD_CONTROL) { int n = snprintf(end, rem, "Ctrl+");  end += n; rem -= n; }
+    if (mod & MOD_SHIFT)   { int n = snprintf(end, rem, "Shift+"); end += n; rem -= n; }
+    if (mod & MOD_ALT)     { int n = snprintf(end, rem, "Alt+");   end += n; rem -= n; }
     /* find key name */
     for (int i = 0; i < HK_KEY_COUNT; i++) {
         if (g_hkVKs[i] == vk) {
-            snprintf(buf + strlen(buf), bufSize - (int)strlen(buf), "%s", g_hkNames[i]);
+            snprintf(end, rem, "%s", g_hkNames[i]);
             return;
         }
     }
     /* fallback */
-    snprintf(buf + strlen(buf), bufSize - (int)strlen(buf), "0x%02X", vk);
+    snprintf(end, rem, "0x%02X", vk);
 }
 
 /* ── Tray ────────────────────────────────────────────────────────────── */
@@ -505,7 +520,7 @@ static void GetBasePath(void)
 static void EncodeNewlines(const char *src, char *dst, int dstSize)
 {
     int j = 0;
-    for (int i = 0; src[i] && j < dstSize - 3; i++) {
+    for (int i = 0; src[i] && j < dstSize - 2; i++) {
         if (src[i] == '\r') continue;
         if (src[i] == '\n') { dst[j++] = '\\'; dst[j++] = 'n'; }
         else                  dst[j++] = src[i];
@@ -516,7 +531,7 @@ static void EncodeNewlines(const char *src, char *dst, int dstSize)
 static void DecodeNewlines(const char *src, char *dst, int dstSize)
 {
     int j = 0;
-    for (int i = 0; src[i] && j < dstSize - 3; i++) {
+    for (int i = 0; src[i] && j < dstSize - 2; i++) {
         if (src[i] == '\\' && src[i + 1] == 'n') {
             dst[j++] = '\r'; dst[j++] = '\n'; i++;
         } else {
@@ -623,8 +638,8 @@ static void SaveAll(void)
     fprintf(f, "Opacity=%d\r\n",      g_opacity);
     fprintf(f, "CompactMode=%d\r\n",  g_compactMode);
     WriteEscaped(f, "WindowTitle",    g_winTitle);
-    fprintf(f, "Prefix=%s\r\n",       enc_prefix);
-    fprintf(f, "Suffix=%s\r\n",       enc_suffix);
+    WriteEscaped(f, "Prefix",         enc_prefix);
+    WriteEscaped(f, "Suffix",         enc_suffix);
     fprintf(f, "\r\n[Buttons]\r\nCount=%d\r\n", g_count);
     for (int i = 0; i < g_count; i++) {
         /* Encode buffer is 2x MAX_TEXT: worst case every byte is a newline. */
@@ -632,7 +647,7 @@ static void SaveAll(void)
         EncodeNewlines(g_buttons[i].text, encoded, sizeof(encoded));
         fprintf(f, "\r\n[Button%d]\r\n",   i + 1);
         WriteEscaped(f, "Name",            g_buttons[i].name);
-        fprintf(f, "Text=%s\r\n",          encoded);
+        WriteEscaped(f, "Text",            encoded);
         WriteEscaped(f, "IconPath",        g_buttons[i].iconPath);
         fprintf(f, "BtnColor=%d\r\n",      (int)g_buttons[i].btnColor);
         fprintf(f, "HasColor=%d\r\n",      g_buttons[i].hasColor);
@@ -663,6 +678,8 @@ static void EnsureDarkGDI(void)
     if (!g_hpenDkBorder) g_hpenDkBorder = CreatePen(PS_SOLID, 1, DK_BORDER);
     if (!g_hpenDkSep)    g_hpenDkSep    = CreatePen(PS_SOLID, 1, DK_SEP);
     if (!g_hpenLtSep)    g_hpenLtSep    = CreatePen(PS_SOLID, 1, LT_SEP);
+    if (!g_hbrCatDk)     g_hbrCatDk     = CreateSolidBrush(DK_CAT_BG);
+    if (!g_hbrCatLt)     g_hbrCatLt     = CreateSolidBrush(LT_CAT_BG);
 }
 
 /* Releases all cached dark-mode GDI objects. Called when toggling dark mode
@@ -674,6 +691,8 @@ static void FreeDarkGDI(void)
     if (g_hpenDkBorder) { DeleteObject(g_hpenDkBorder); g_hpenDkBorder = NULL; }
     if (g_hpenDkSep)    { DeleteObject(g_hpenDkSep);    g_hpenDkSep    = NULL; }
     if (g_hpenLtSep)    { DeleteObject(g_hpenLtSep);    g_hpenLtSep    = NULL; }
+    if (g_hbrCatDk)     { DeleteObject(g_hbrCatDk);     g_hbrCatDk     = NULL; }
+    if (g_hbrCatLt)     { DeleteObject(g_hbrCatLt);     g_hbrCatLt     = NULL; }
 }
 
 /* Loads or reloads the icon for a single button slot without touching any
@@ -685,7 +704,12 @@ static void LoadSingleButtonIcon(int i)
     if (g_icons[i]) { DestroyIcon(g_icons[i]); g_icons[i] = NULL; }
     if (!g_buttons[i].iconPath[0] || g_buttons[i].isSeparator || g_buttons[i].isCategory)
         return;
-    g_icons[i] = (HICON)LoadImage(NULL, g_buttons[i].iconPath,
+    /* Reject UNC paths (\\server\share) to prevent outbound network requests
+       triggered by a malicious or corrupted INI file. */
+    const char *ip = g_buttons[i].iconPath;
+    if (ip[0] == '\\' && ip[1] == '\\') return;
+    if (ip[0] == '/'  && ip[1] == '/')  return;
+    g_icons[i] = (HICON)LoadImage(NULL, ip,
                                   IMAGE_ICON, 16, 16, LR_LOADFROMFILE);
 }
 
@@ -693,9 +717,12 @@ static void LoadButtonIcons(void)
 {
     FreeIcons();
     for (int i = 0; i < g_count; i++) {
-        if (!g_buttons[i].iconPath[0] || g_buttons[i].isSeparator || g_buttons[i].isCategory)
+        const char *ip = g_buttons[i].iconPath;
+        if (!ip[0] || g_buttons[i].isSeparator || g_buttons[i].isCategory)
             continue;
-        g_icons[i] = (HICON)LoadImage(NULL, g_buttons[i].iconPath,
+        if (ip[0] == '\\' && ip[1] == '\\') continue;
+        if (ip[0] == '/'  && ip[1] == '/')  continue;
+        g_icons[i] = (HICON)LoadImage(NULL, ip,
                                       IMAGE_ICON, 16, 16, LR_LOADFROMFILE);
     }
 }
@@ -718,12 +745,16 @@ static void TypeText(const char *text)
     if (!text || !text[0]) return;
     if (!g_prevWindow || !IsWindow(g_prevWindow)) return;
 
-    int wlen = MultiByteToWideChar(CP_ACP, 0, text, -1, NULL, 0);
+    /* Convert UTF-8 button text to wide-char for clipboard. CP_UTF8 handles
+       the full Unicode range; on systems with the legacy ANSI code page this
+       is equivalent to CP_ACP for ASCII but correctly passes through any
+       multi-byte UTF-8 sequences that were stored in the INI. */
+    int wlen = MultiByteToWideChar(CP_UTF8, 0, text, -1, NULL, 0);
     if (wlen <= 1) return;
     HGLOBAL hMem = GlobalAlloc(GMEM_MOVEABLE, wlen * sizeof(WCHAR));
     if (!hMem) return;
     WCHAR *pMem = (WCHAR *)GlobalLock(hMem);
-    MultiByteToWideChar(CP_ACP, 0, text, -1, pMem, wlen);
+    MultiByteToWideChar(CP_UTF8, 0, text, -1, pMem, wlen);
     GlobalUnlock(hMem);
 
     if (!OpenClipboard(g_hwndMain)) { GlobalFree(hMem); return; }
@@ -777,8 +808,9 @@ static void ExpandVariables(const char *in, char *out, int outSize, const char *
 /* Splits text into ACT_TEXT / ACT_KEY segments for sequential dispatch.  */
 static void BuildFireActions(const char *text)
 {
-    g_fireCount = 0;
-    g_fireIdx   = 0;
+    g_fireCount   = 0;
+    g_fireIdx     = 0;
+    g_fireTextPos = 0;
 
     char buf[MAX_TEXT];
     int  bi = 0, ti = 0, tlen = (int)strlen(text);
@@ -790,23 +822,29 @@ static void BuildFireActions(const char *text)
                 int tl = g_keyTokens[k].tokLen;
                 if (ti + tl > tlen) continue;
                 char tmp[32]; int ci;
-                if (tl >= (int)sizeof(tmp)) continue; /* token too long for buffer — skip */
+                if (tl >= (int)sizeof(tmp)) continue; /* token too long for buffer - skip */
                 for (ci = 0; ci < tl; ci++)
                     tmp[ci] = (char)tolower((unsigned char)text[ti + ci]);
                 tmp[tl] = '\0';
                 if (strcmp(tmp, g_keyTokens[k].tok) == 0) {
                     if (bi > 0 && g_fireCount < MAX_FIRE_ACTIONS) {
                         buf[bi] = '\0';
+                        int needed = bi + 1;
                         g_fireActions[g_fireCount].type = ACT_TEXT;
-                        strncpy(g_fireActions[g_fireCount].text, buf, MAX_TEXT - 1);
-                        g_fireActions[g_fireCount].text[MAX_TEXT - 1] = '\0';
+                        if (g_fireTextPos + needed <= FIRE_POOL_SIZE) {
+                            g_fireActions[g_fireCount].text = g_fireTextPool + g_fireTextPos;
+                            memcpy(g_fireActions[g_fireCount].text, buf, needed);
+                            g_fireTextPos += needed;
+                        } else {
+                            g_fireActions[g_fireCount].text = ""; /* pool full; skip gracefully */
+                        }
                         g_fireActions[g_fireCount].vk = 0;
                         g_fireCount++; bi = 0;
                     }
                     if (g_fireCount < MAX_FIRE_ACTIONS) {
-                        g_fireActions[g_fireCount].type    = ACT_KEY;
-                        g_fireActions[g_fireCount].text[0] = '\0';
-                        g_fireActions[g_fireCount].vk      = g_keyTokens[k].vk;
+                        g_fireActions[g_fireCount].type = ACT_KEY;
+                        g_fireActions[g_fireCount].text = NULL;
+                        g_fireActions[g_fireCount].vk   = g_keyTokens[k].vk;
                         g_fireCount++;
                     }
                     ti += tl; matched = 1; break;
@@ -820,9 +858,15 @@ static void BuildFireActions(const char *text)
     }
     if (bi > 0 && g_fireCount < MAX_FIRE_ACTIONS) {
         buf[bi] = '\0';
+        int needed = bi + 1;
         g_fireActions[g_fireCount].type = ACT_TEXT;
-        strncpy(g_fireActions[g_fireCount].text, buf, MAX_TEXT - 1);
-        g_fireActions[g_fireCount].text[MAX_TEXT - 1] = '\0';
+        if (g_fireTextPos + needed <= FIRE_POOL_SIZE) {
+            g_fireActions[g_fireCount].text = g_fireTextPool + g_fireTextPos;
+            memcpy(g_fireActions[g_fireCount].text, buf, needed);
+            g_fireTextPos += needed;
+        } else {
+            g_fireActions[g_fireCount].text = ""; /* pool full; skip gracefully */
+        }
         g_fireActions[g_fireCount].vk = 0;
         g_fireCount++;
     }
@@ -834,7 +878,7 @@ static void FireNextAction(void)
 {
     while (g_fireIdx < g_fireCount &&
            g_fireActions[g_fireIdx].type == ACT_TEXT &&
-           !g_fireActions[g_fireIdx].text[0])
+           (!g_fireActions[g_fireIdx].text || !g_fireActions[g_fireIdx].text[0]))
         g_fireIdx++;
 
     if (g_fireIdx >= g_fireCount) { g_pendingIdx = -1; return; }
@@ -844,11 +888,11 @@ static void FireNextAction(void)
     if (a->type == ACT_TEXT) {
         TypeText(a->text);
         SetForegroundWindow(g_prevWindow);
-        SetTimer(g_hwndMain, 1, 80, NULL);
+        SetTimer(g_hwndMain, TIMER_PASTE, 80, NULL);
     } else {
         g_pendingVk = a->vk;
         SetForegroundWindow(g_prevWindow);
-        SetTimer(g_hwndMain, 3, 50, NULL);
+        SetTimer(g_hwndMain, TIMER_KEY, 50, NULL);
     }
 }
 
@@ -910,12 +954,18 @@ static void DrawButton(LPDRAWITEMSTRUCT dis, int idx)
         return;
     }
 
-    /* ── Category header ── */
+    /* Category header */
     if (idx >= 0 && idx < g_count && g_buttons[idx].isCategory) {
-        COLORREF bg   = g_darkMode ? DK_CAT_BG   : LT_CAT_BG;
-        COLORREF text = g_darkMode ? DK_CAT_TEXT  : LT_CAT_TEXT;
-        HBRUSH hbr = CreateSolidBrush(pressed ? (g_darkMode ? DK_BTN_PRE : RGB(180,205,235)) : bg);
-        FillRect(dis->hDC, &rc, hbr); DeleteObject(hbr);
+        COLORREF text = g_darkMode ? DK_CAT_TEXT : LT_CAT_TEXT;
+        EnsureDarkGDI();
+        HBRUSH baseBrush = g_darkMode ? g_hbrCatDk : g_hbrCatLt;
+        if (pressed) {
+            /* Pressed state uses a transient lighter shade; not worth caching. */
+            HBRUSH hbr = CreateSolidBrush(g_darkMode ? DK_BTN_PRE : RGB(180, 205, 235));
+            FillRect(dis->hDC, &rc, hbr); DeleteObject(hbr);
+        } else {
+            FillRect(dis->hDC, &rc, baseBrush);
+        }
         const char *arrow = g_collapsed[idx] ? ">" : "v";
         SetBkMode(dis->hDC, TRANSPARENT);
         SetTextColor(dis->hDC, text);
@@ -929,10 +979,15 @@ static void DrawButton(LPDRAWITEMSTRUCT dis, int idx)
         return;
     }
 
-    /* ── Separator ── */
+    /* Separator */
     if (idx >= 0 && idx < g_count && g_buttons[idx].isSeparator) {
-        HBRUSH hbr = CreateSolidBrush(g_darkMode ? DK_BG : GetSysColor(COLOR_BTNFACE));
-        FillRect(dis->hDC, &rc, hbr); DeleteObject(hbr);
+        EnsureDarkGDI();
+        /* Fill background using cached brush or system color; no per-call alloc. */
+        if (g_darkMode) {
+            FillRect(dis->hDC, &rc, g_hbrDkBg ? g_hbrDkBg : (HBRUSH)(COLOR_BTNFACE + 1));
+        } else {
+            FillRect(dis->hDC, &rc, (HBRUSH)(COLOR_BTNFACE + 1));
+        }
         int midY = (rc.top + rc.bottom) / 2;
         EnsureDarkGDI();
         HPEN hop = (HPEN)SelectObject(dis->hDC, g_darkMode ? g_hpenDkSep : g_hpenLtSep);
@@ -1059,7 +1114,7 @@ static void RefreshMainWindow(void)
         if (col > 0) y += sz + gap;
 
     } else if (g_filterText[0]) {
-        /* flat filtered list — no category structure */
+        /* flat filtered list - no category structure */
         for (int i = 0; i < g_count; i++) {
             if (!ButtonMatchesFilter(i)) continue;
             g_hwndBtns[i] = CreateWindow("BUTTON", g_buttons[i].name,
@@ -1083,7 +1138,7 @@ static void RefreshMainWindow(void)
                 y += h + 3;
 
             } else if (catCollapsed) {
-                /* skip — category is collapsed */
+                /* skip - category is collapsed */
                 continue;
 
             } else if (g_buttons[i].isSeparator) {
@@ -1650,12 +1705,17 @@ static LRESULT CALLBACK PromptDlgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM
     return DefWindowProc(hwnd, msg, wParam, lParam);
 }
 
-/* ── FireButton — shared by click and WM_HOTKEY ─────────────────────── */
+/* FireButton -- shared by click and WM_HOTKEY */
 static void FireButton(int idx)
 {
     if (idx < 0 || idx >= g_count) return;
     if (g_buttons[idx].isSeparator || g_buttons[idx].isCategory) return;
     if (!g_prevWindow || !IsWindow(g_prevWindow)) return;
+
+    /* Reject a new fire if the previous clipboard-paste sequence is still in
+       flight. Starting a second sequence would overwrite g_hOldClip, leaking
+       the handle and losing the user's original clipboard content. */
+    if (g_pendingIdx >= 0) return;
 
     /* 1. capture clipboard */
     char clipContent[MAX_TEXT] = "";
@@ -1663,7 +1723,9 @@ static void FireButton(int idx)
         HANDLE hc = GetClipboardData(CF_UNICODETEXT);
         if (hc) {
             WCHAR *pw = (WCHAR *)GlobalLock(hc);
-            if (pw) { WideCharToMultiByte(CP_ACP, 0, pw, -1, clipContent, MAX_TEXT, NULL, NULL); GlobalUnlock(hc); }
+            /* Use CP_UTF8 so Unicode clipboard content round-trips correctly
+               through ExpandVariables when {clipboard} is used. */
+            if (pw) { WideCharToMultiByte(CP_UTF8, 0, pw, -1, clipContent, MAX_TEXT, NULL, NULL); GlobalUnlock(hc); }
         }
         CloseClipboard();
     }
@@ -1777,9 +1839,9 @@ static LRESULT CALLBACK MainProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
     }
 
     case WM_TIMER:
-        if (wParam == 1) {
-            /* Timer 1: send Ctrl+V to paste the clipboard into the target window */
-            KillTimer(hwnd, 1);
+        if (wParam == TIMER_PASTE) {
+            /* TIMER_PASTE: send Ctrl+V to paste the clipboard into the target window */
+            KillTimer(hwnd, TIMER_PASTE);
             if (g_pendingIdx >= 0 && g_pendingIdx < g_count) {
                 INPUT inputs[4] = {0};
                 inputs[0].type=INPUT_KEYBOARD; inputs[0].ki.wVk=VK_CONTROL;
@@ -1787,20 +1849,20 @@ static LRESULT CALLBACK MainProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
                 inputs[2].type=INPUT_KEYBOARD; inputs[2].ki.wVk='V';        inputs[2].ki.dwFlags=KEYEVENTF_KEYUP;
                 inputs[3].type=INPUT_KEYBOARD; inputs[3].ki.wVk=VK_CONTROL; inputs[3].ki.dwFlags=KEYEVENTF_KEYUP;
                 SendInput(4, inputs, sizeof(INPUT));
-                SetTimer(hwnd, 2, 300, NULL);
+                SetTimer(hwnd, TIMER_RESTORE, 300, NULL);
             }
-        } else if (wParam == 2) {
-            /* Timer 2: restore previous clipboard contents, then fire next action */
-            KillTimer(hwnd, 2);
+        } else if (wParam == TIMER_RESTORE) {
+            /* TIMER_RESTORE: restore previous clipboard contents, then fire next action */
+            KillTimer(hwnd, TIMER_RESTORE);
             if (OpenClipboard(g_hwndMain)) {
                 EmptyClipboard();
                 if (g_hOldClip) { SetClipboardData(CF_UNICODETEXT, g_hOldClip); g_hOldClip=NULL; }
                 CloseClipboard();
             }
             FireNextAction();
-        } else if (wParam == 3) {
-            /* Timer 3: send a system key (e.g. Tab, Enter, Esc) via SendInput */
-            KillTimer(hwnd, 3);
+        } else if (wParam == TIMER_KEY) {
+            /* TIMER_KEY: send a system key (e.g. Tab, Enter, Esc) via SendInput */
+            KillTimer(hwnd, TIMER_KEY);
             if (g_pendingVk) {
                 INPUT ki[2] = {0};
                 ki[0].type = INPUT_KEYBOARD; ki[0].ki.wVk = (WORD)g_pendingVk;
@@ -1809,17 +1871,17 @@ static LRESULT CALLBACK MainProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
                 SendInput(2, ki, sizeof(INPUT));
                 g_pendingVk = 0;
             }
-            SetTimer(hwnd, 4, 50, NULL);   /* brief pause before next action */
-        } else if (wParam == 4) {
-            /* Timer 4: post-key pause — fire the next action in the list */
-            KillTimer(hwnd, 4);
+            SetTimer(hwnd, TIMER_KEY_GAP, 50, NULL); /* brief pause before next action */
+        } else if (wParam == TIMER_KEY_GAP) {
+            /* TIMER_KEY_GAP: post-key pause -- fire the next action in the list */
+            KillTimer(hwnd, TIMER_KEY_GAP);
             FireNextAction();
         }
         return 0;
 
     case WM_CLOSE:
         if (g_minToTray) { ShowWindow(hwnd, SW_HIDE); AddTrayIcon(); }
-        else             { SaveAll(); DestroyWindow(hwnd); }
+        else             { DestroyWindow(hwnd); }
         return 0;
 
     case WM_TRAYICON:
@@ -1847,7 +1909,7 @@ static LRESULT CALLBACK MainProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
             int cmd = TrackPopupMenu(hM, TPM_RETURNCMD|TPM_RIGHTBUTTON, pt.x, pt.y, 0, hwnd, NULL);
             DestroyMenu(hM); /* also destroys hSub */
             if      (cmd == IDM_TRAY_RESTORE) { RemoveTrayIcon(); ShowWindow(hwnd,SW_RESTORE); SetForegroundWindow(hwnd); }
-            else if (cmd == IDM_TRAY_EXIT)    { RemoveTrayIcon(); SaveAll(); DestroyWindow(hwnd); }
+            else if (cmd == IDM_TRAY_EXIT)    { RemoveTrayIcon(); DestroyWindow(hwnd); }
             else if (cmd >= IDM_PROFILE_BASE && cmd < IDM_PROFILE_BASE + g_profileCount)
                 SwitchProfile(cmd - IDM_PROFILE_BASE);
             else if (cmd == IDM_PROFILE_NEW)    PostMessage(hwnd, WM_COMMAND, IDM_PROFILE_NEW,    0);
@@ -2137,7 +2199,7 @@ static LRESULT CALLBACK MainProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
 
         } else if(id==ID_HELP_ABOUT){
             ShowInfoDialog(hwnd,"About Simple Typer",
-                "Simple Typer\r\nVersion 2.30\r\n\r\n"
+                "Simple Typer\r\nVersion 2.31\r\n\r\n"
                 "Author:   UberGuidoZ\r\n"
                 "Contact:  https://github.com/UberGuidoZ");
 
@@ -2176,7 +2238,8 @@ static LRESULT CALLBACK MainProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
         FreeIcons();
         /* If the app is closed while a paste timer is in flight, restore the
            clipboard ourselves so the user's original content is not lost. */
-        KillTimer(hwnd, 1); KillTimer(hwnd, 2);
+        KillTimer(hwnd, TIMER_PASTE); KillTimer(hwnd, TIMER_RESTORE);
+        KillTimer(hwnd, TIMER_KEY);   KillTimer(hwnd, TIMER_KEY_GAP);
         if (g_hOldClip) {
             if (OpenClipboard(g_hwndMain)) {
                 EmptyClipboard();
