@@ -1,5 +1,5 @@
 /*
- * simple_typer.c - Simple Typer v2.31
+ * simple_typer.c - Simple Typer v2.32
  *
  * Each button types its stored text into whatever window had focus before the button was clicked.
  *
@@ -14,7 +14,7 @@
  *   - Remembers last window position
  *   - Window opacity and configurable title
  *   - Button tooltips showing a preview of stored text on hover
- *   - Variables: {date} {time} {clipboard} expand automatically when typed
+ *   - Variables: {date} {isodate} {time} {clipboard} expand automatically when typed
  *   - Fill-in-the-blank: {?} in button text pops a small input box first
  *   - Global text prefix and suffix appended to every button's output
  *   - Search/filter bar - type to instantly filter buttons by name
@@ -23,7 +23,9 @@
  *   - Keyboard shortcuts - optional global hotkey per button
  *   - Multiple profiles - switchable INI sets from tray or Profiles menu
  *   - System key tokens - {tab} {enter} {esc} etc. send keystrokes mid-text
- *   - Version 2.31
+ *   - Undo Delete - Ctrl+Z or right-click restores the last deleted button
+ *   - Export / Import buttons to and from a portable INI snippet file
+ *   - Version 2.32
  *
  * Compile:
  *   cl simple_typer.c simple_typer.res /link user32.lib shell32.lib comdlg32.lib gdi32.lib dwmapi.lib comctl32.lib /subsystem:windows /out:simple_typer.exe
@@ -76,6 +78,8 @@ static void FireNextAction(void);
 static void ScanProfiles(void);
 static void SwitchProfile(int idx);
 static void WriteEscaped(FILE *f, const char *key, const char *val);
+static void ExportButtons(void);
+static void ImportButtons(void);
 
 /* ── IDs ─────────────────────────────────────────────────────────────── */
 #define ID_ADD_BTN            1
@@ -134,6 +138,8 @@ static void WriteEscaped(FILE *f, const char *key, const char *val);
 #define ID_HELP_ABOUT         21
 #define ID_SETTINGS           22
 #define ID_PROFILES_MENU      23
+#define ID_EXPORT_BUTTONS     24
+#define ID_IMPORT_BUTTONS     25
 
 /* Right-click context menu */
 #define IDM_MOVE_UP           300
@@ -141,6 +147,7 @@ static void WriteEscaped(FILE *f, const char *key, const char *val);
 #define IDM_EDIT_BTN          302
 #define IDM_DELETE_BTN        303
 #define IDM_DUPLICATE_BTN     304
+#define IDM_UNDO_DELETE       305
 
 /* System tray */
 #define WM_TRAYICON           (WM_APP + 1)
@@ -170,8 +177,8 @@ static void WriteEscaped(FILE *f, const char *key, const char *val);
 #define DK_CAT_TEXT RGB(200, 225, 255)
 #define LT_CAT_TEXT RGB( 20,  50, 100)
 
-static const char *g_menuLabels[] = { "Instructions", "Settings", "Profiles", "About" };
-static const UINT  g_menuIDs[]    = { ID_HELP_INSTRUCTIONS, ID_SETTINGS, ID_PROFILES_MENU, ID_HELP_ABOUT };
+static const char *g_menuLabels[] = { "Instructions", "Settings", "Profiles", "Export", "Import", "About" };
+static const UINT  g_menuIDs[]    = { ID_HELP_INSTRUCTIONS, ID_SETTINGS, ID_PROFILES_MENU, ID_EXPORT_BUTTONS, ID_IMPORT_BUTTONS, ID_HELP_ABOUT };
 
 /* ── Hotkey key table ────────────────────────────────────────────────── */
 static const char *g_hkNames[] = {
@@ -258,6 +265,11 @@ static char         g_tooltipText[MAX_BUTTONS][128];
 static HWND         g_hwndSearch  = NULL;
 static char         g_filterText[256] = "";
 static HBRUSH       g_hbrSearchDk = NULL;
+
+/* Undo delete - stores the last deleted button so it can be restored */
+static ButtonConfig g_undoButton;
+static int          g_undoIndex = -1;   /* position the button was deleted from */
+static int          g_undoValid = 0;    /* 1 if there is something to undo */
 
 /* Fill-in-the-blank prompt */
 static char         g_promptResult[512];
@@ -779,8 +791,18 @@ static void TypeText(const char *text)
 static void ExpandVariables(const char *in, char *out, int outSize, const char *clipText)
 {
     SYSTEMTIME st; GetLocalTime(&st);
-    char dateBuf[32], timeBuf[32];
-    snprintf(dateBuf, sizeof(dateBuf), "%02d/%02d/%04d", st.wMonth, st.wDay, st.wYear);
+
+    /* {date}: short date formatted to the user's regional settings */
+    char dateBuf[64];
+    if (!GetDateFormatEx(LOCALE_NAME_USER_DEFAULT, DATE_SHORTDATE, &st,
+                         NULL, dateBuf, (int)sizeof(dateBuf), NULL))
+        snprintf(dateBuf, sizeof(dateBuf), "%02d/%02d/%04d", st.wMonth, st.wDay, st.wYear);
+
+    /* {isodate}: ISO 8601 date (YYYY-MM-DD), locale-independent */
+    char isoDateBuf[16];
+    snprintf(isoDateBuf, sizeof(isoDateBuf), "%04d-%02d-%02d", st.wYear, st.wMonth, st.wDay);
+
+    char timeBuf[32];
     snprintf(timeBuf, sizeof(timeBuf), "%02d:%02d", st.wHour, st.wMinute);
 
     int i = 0, j = 0, inLen = (int)strlen(in);
@@ -790,6 +812,10 @@ static void ExpandVariables(const char *in, char *out, int outSize, const char *
                 int l = (int)strlen(dateBuf);
                 if (j + l < outSize - 1) { memcpy(&out[j], dateBuf, l); j += l; }
                 i += 6;
+            } else if (strncmp(&in[i], "{isodate}", 9) == 0) {
+                int l = (int)strlen(isoDateBuf);
+                if (j + l < outSize - 1) { memcpy(&out[j], isoDateBuf, l); j += l; }
+                i += 9;
             } else if (strncmp(&in[i], "{time}", 6) == 0) {
                 int l = (int)strlen(timeBuf);
                 if (j + l < outSize - 1) { memcpy(&out[j], timeBuf, l); j += l; }
@@ -1292,6 +1318,9 @@ static void ShowButtonContextMenu(HWND hwnd, int idx, POINT pt)
     AppendMenu(hMenu, MF_STRING | (g_count >= MAX_BUTTONS ? MF_GRAYED : 0),
                IDM_DUPLICATE_BTN, "Duplicate");
     AppendMenu(hMenu, MF_STRING, IDM_DELETE_BTN, "Delete");
+    AppendMenu(hMenu, MF_SEPARATOR, 0, NULL);
+    AppendMenu(hMenu, MF_STRING | (g_undoValid ? 0 : MF_GRAYED),
+               IDM_UNDO_DELETE, "Undo Delete");
     SetForegroundWindow(hwnd);
     TrackPopupMenu(hMenu, TPM_RIGHTBUTTON, pt.x, pt.y, 0, hwnd, NULL);
     DestroyMenu(hMenu);
@@ -1879,6 +1908,14 @@ static LRESULT CALLBACK MainProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
         }
         return 0;
 
+    case WM_KEYDOWN:
+        if (wParam == 'Z' && (GetKeyState(VK_CONTROL) & 0x8000)) {
+            /* Ctrl+Z: undo the last button deletion if one is available. */
+            if (g_undoValid)
+                PostMessage(hwnd, WM_COMMAND, IDM_UNDO_DELETE, 0);
+        }
+        return 0;
+
     case WM_CLOSE:
         if (g_minToTray) { ShowWindow(hwnd, SW_HIDE); AddTrayIcon(); }
         else             { DestroyWindow(hwnd); }
@@ -2037,6 +2074,12 @@ static LRESULT CALLBACK MainProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
         } else if(id==IDM_DELETE_BTN && g_ctxIndex>=0){
             char confirm[300]; snprintf(confirm, sizeof(confirm), "Delete \"%s\"?",g_buttons[g_ctxIndex].name);
             if(MessageBox(hwnd,confirm,"Confirm Delete",MB_YESNO|MB_ICONQUESTION)==IDYES){
+                /* Save undo state before removing the button. The icon handle
+                   is not preserved because LoadSingleButtonIcon reloads it
+                   from the path stored in g_undoButton.iconPath on restore. */
+                g_undoButton = g_buttons[g_ctxIndex];
+                g_undoIndex  = g_ctxIndex;
+                g_undoValid  = 1;
                 if(g_icons[g_ctxIndex]){ DestroyIcon(g_icons[g_ctxIndex]); g_icons[g_ctxIndex]=NULL; }
                 for(int i=g_ctxIndex; i<g_count-1; i++){
                     g_buttons[i]=g_buttons[i+1]; g_icons[i]=g_icons[i+1]; g_collapsed[i]=g_collapsed[i+1];
@@ -2046,7 +2089,23 @@ static LRESULT CALLBACK MainProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
             }
             g_ctxIndex=-1;
 
-        } else if(id >= IDM_PROFILE_BASE && id < IDM_PROFILE_BASE + g_profileCount){
+        } else if(id==IDM_UNDO_DELETE && g_undoValid){
+            if(g_count >= MAX_BUTTONS){
+                MessageBox(hwnd,"Cannot restore: button list is full.","Undo",MB_OK|MB_ICONWARNING);
+            } else {
+                /* Shift buttons from the insertion point up by one to make room. */
+                int ins = g_undoIndex <= g_count ? g_undoIndex : g_count;
+                for(int i=g_count; i>ins; i--){
+                    g_buttons[i]=g_buttons[i-1]; g_icons[i]=g_icons[i-1]; g_collapsed[i]=g_collapsed[i-1];
+                }
+                g_buttons[ins]   = g_undoButton;
+                g_icons[ins]     = NULL;
+                g_collapsed[ins] = 0;
+                g_count++;
+                g_undoValid = 0;
+                LoadSingleButtonIcon(ins);
+                RegisterAllHotkeys(); SaveAll(); RefreshMainWindow();
+            }
             SwitchProfile(id - IDM_PROFILE_BASE);
 
         } else if(id == ID_PROFILES_MENU){
@@ -2133,7 +2192,8 @@ static LRESULT CALLBACK MainProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
                 "3. The stored text is pasted into your previous text field.\r\n"
                 "\r\n"
                 "VARIABLES\r\n"
-                "  {date}      - today's date (MM/DD/YYYY)\r\n"
+                "  {date}      - today's date in your regional short-date format\r\n"
+                "  {isodate}   - today's date in ISO 8601 format (YYYY-MM-DD)\r\n"
                 "  {time}      - current time (HH:MM)\r\n"
                 "  {clipboard} - your clipboard contents\r\n"
                 "  {?}         - pops an input box; your answer replaces {?}\r\n"
@@ -2172,11 +2232,19 @@ static LRESULT CALLBACK MainProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
                 "its icon or first letter. Hover for the full button name.\r\n"
                 "\r\n"
                 "RIGHT-CLICK BUTTONS\r\n"
-                "Edit, Delete, Duplicate, Move Up, Move Down.\r\n"
+                "Edit, Delete, Duplicate, Move Up, Move Down, Undo Delete. "
+                "The Undo Delete item is grayed out until a button has been deleted. "
+                "You can also press Ctrl+Z at any time to undo the last deletion.\r\n"
                 "\r\n"
                 "SETTINGS\r\n"
                 "Dark mode, font size, window width, always on top, minimize to "
                 "system tray, compact mode, window title, opacity, prefix/suffix.\r\n"
+                "\r\n"
+                "EXPORT / IMPORT\r\n"
+                "Use the Export menu item to save all current buttons to a standalone "
+                ".ini file. Use Import to append buttons from such a file into the "
+                "current profile. Buttons that would exceed the 64-button limit are "
+                "skipped and reported. Settings are not included in exported files.\r\n"
                 "\r\n"
                 "CONFIGURATION FILE\r\n"
                 "All settings are saved to typer.ini (Default profile) or "
@@ -2187,6 +2255,12 @@ static LRESULT CALLBACK MainProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
                 "Use the Profiles menu (menu bar or tray right-click) to switch profiles, "
                 "create new ones, or delete the current one. "
                 "The Default profile (typer.ini) cannot be deleted.");
+
+        } else if(id==ID_EXPORT_BUTTONS){
+            ExportButtons();
+
+        } else if(id==ID_IMPORT_BUTTONS){
+            ImportButtons();
 
         } else if(id==ID_SETTINGS){
             if(g_hwndDlg){ SetForegroundWindow(g_hwndDlg); return 0; }
@@ -2199,7 +2273,7 @@ static LRESULT CALLBACK MainProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
 
         } else if(id==ID_HELP_ABOUT){
             ShowInfoDialog(hwnd,"About Simple Typer",
-                "Simple Typer\r\nVersion 2.31\r\n\r\n"
+                "Simple Typer\r\nVersion 2.32\r\n\r\n"
                 "Author:   UberGuidoZ\r\n"
                 "Contact:  https://github.com/UberGuidoZ");
 
@@ -2258,6 +2332,129 @@ static LRESULT CALLBACK MainProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
         PostQuitMessage(0); return 0;
     }
     return DefWindowProc(hwnd, msg, wParam, lParam);
+}
+
+/* ── Export / Import ─────────────────────────────────────────────────── */
+
+/* Writes the currently loaded buttons to a user-chosen .ini file using the
+   same [Button1]..[ButtonN] format as the main profile INI. The exported
+   file contains only the [Buttons] section -- no [Settings] block -- so it
+   can be shared and imported into any profile without overwriting settings. */
+static void ExportButtons(void)
+{
+    if (g_count == 0) {
+        MessageBox(g_hwndMain, "There are no buttons to export.", "Export", MB_OK | MB_ICONINFORMATION);
+        return;
+    }
+
+    OPENFILENAME ofn;
+    char path[MAX_PATH] = "typer_export.ini";
+    ZeroMemory(&ofn, sizeof(ofn));
+    ofn.lStructSize = sizeof(ofn);
+    ofn.hwndOwner   = g_hwndMain;
+    ofn.lpstrFile   = path;
+    ofn.nMaxFile    = MAX_PATH;
+    ofn.lpstrFilter = "INI files (*.ini)\0*.ini\0All Files\0*.*\0";
+    ofn.lpstrDefExt = "ini";
+    ofn.Flags       = OFN_OVERWRITEPROMPT | OFN_PATHMUSTEXIST;
+    if (!GetSaveFileName(&ofn)) return;
+
+    FILE *f = fopen(path, "w");
+    if (!f) {
+        MessageBox(g_hwndMain, "Could not create the export file.", "Export", MB_OK | MB_ICONERROR);
+        return;
+    }
+
+    fprintf(f, "[Buttons]\r\nCount=%d\r\n", g_count);
+    for (int i = 0; i < g_count; i++) {
+        char encoded[MAX_TEXT * 2];
+        EncodeNewlines(g_buttons[i].text, encoded, sizeof(encoded));
+        fprintf(f, "\r\n[Button%d]\r\n", i + 1);
+        WriteEscaped(f, "Name",     g_buttons[i].name);
+        WriteEscaped(f, "Text",     encoded);
+        WriteEscaped(f, "IconPath", g_buttons[i].iconPath);
+        fprintf(f, "BtnColor=%d\r\n",  (int)g_buttons[i].btnColor);
+        fprintf(f, "HasColor=%d\r\n",  g_buttons[i].hasColor);
+        fprintf(f, "Separator=%d\r\n", g_buttons[i].isSeparator);
+        fprintf(f, "ShowIcon=%d\r\n",  g_buttons[i].showIcon);
+        fprintf(f, "IsCategory=%d\r\n",g_buttons[i].isCategory);
+        fprintf(f, "HotkeyMod=%d\r\n", g_buttons[i].hotkeyMod);
+        fprintf(f, "HotkeyVk=%d\r\n",  g_buttons[i].hotkeyVk);
+    }
+    fclose(f);
+
+    char msg[MAX_PATH + 64];
+    snprintf(msg, sizeof(msg), "Exported %d button(s) to:\n%s", g_count, path);
+    MessageBox(g_hwndMain, msg, "Export", MB_OK | MB_ICONINFORMATION);
+}
+
+/* Reads buttons from a user-chosen export file and appends them after the
+   existing buttons. Buttons that would exceed MAX_BUTTONS are skipped and
+   the user is informed. Hotkeys from the imported buttons are registered
+   only if they do not conflict with existing ones -- RegisterHotKey itself
+   silently fails on conflicts, which is the existing behaviour for normal
+   button adds. */
+static void ImportButtons(void)
+{
+    OPENFILENAME ofn;
+    char path[MAX_PATH] = "";
+    ZeroMemory(&ofn, sizeof(ofn));
+    ofn.lStructSize = sizeof(ofn);
+    ofn.hwndOwner   = g_hwndMain;
+    ofn.lpstrFile   = path;
+    ofn.nMaxFile    = MAX_PATH;
+    ofn.lpstrFilter = "INI files (*.ini)\0*.ini\0All Files\0*.*\0";
+    ofn.Flags       = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST;
+    if (!GetOpenFileName(&ofn)) return;
+
+    int importCount = GetPrivateProfileInt("Buttons", "Count", 0, path);
+    if (importCount <= 0) {
+        MessageBox(g_hwndMain, "No buttons found in that file.", "Import", MB_OK | MB_ICONWARNING);
+        return;
+    }
+
+    int added = 0, skipped = 0;
+    for (int i = 0; i < importCount; i++) {
+        if (g_count >= MAX_BUTTONS) { skipped++; continue; }
+
+        char sec[32], encoded[MAX_TEXT];
+        snprintf(sec, sizeof(sec), "Button%d", i + 1);
+
+        ButtonConfig bc;
+        memset(&bc, 0, sizeof(bc));
+        GetPrivateProfileString(sec, "Name",     "", bc.name,     256,      path);
+        GetPrivateProfileString(sec, "IconPath", "", bc.iconPath, MAX_PATH, path);
+        GetPrivateProfileString(sec, "Text",     "", encoded,     MAX_TEXT, path);
+        DecodeNewlines(encoded, bc.text, MAX_TEXT);
+        bc.btnColor    = (COLORREF)GetPrivateProfileInt(sec, "BtnColor",   0, path);
+        bc.hasColor    = GetPrivateProfileInt(sec, "HasColor",   0, path);
+        bc.isSeparator = GetPrivateProfileInt(sec, "Separator",  0, path);
+        bc.showIcon    = GetPrivateProfileInt(sec, "ShowIcon",   0, path);
+        bc.isCategory  = GetPrivateProfileInt(sec, "IsCategory", 0, path);
+        bc.hotkeyMod   = GetPrivateProfileInt(sec, "HotkeyMod",  0, path);
+        bc.hotkeyVk    = GetPrivateProfileInt(sec, "HotkeyVk",   0, path);
+
+        g_buttons[g_count]   = bc;
+        g_icons[g_count]     = NULL;
+        g_collapsed[g_count] = 0;
+        LoadSingleButtonIcon(g_count);
+        g_count++;
+        added++;
+    }
+
+    if (added > 0) {
+        RegisterAllHotkeys();
+        SaveAll();
+        RefreshMainWindow();
+    }
+
+    char msg[256];
+    if (skipped > 0)
+        snprintf(msg, sizeof(msg),
+                 "Imported %d button(s). %d skipped (button list is full).", added, skipped);
+    else
+        snprintf(msg, sizeof(msg), "Imported %d button(s).", added);
+    MessageBox(g_hwndMain, msg, "Import", MB_OK | MB_ICONINFORMATION);
 }
 
 /* ── Entry point ─────────────────────────────────────────────────────── */
