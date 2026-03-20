@@ -1,5 +1,5 @@
 /*
- * simple_typer.c - Simple Typer v2.32
+ * simple_typer.c - Simple Typer v2.33
  *
  * Each button types its stored text into whatever window had focus before the button was clicked.
  *
@@ -25,7 +25,8 @@
  *   - System key tokens - {tab} {enter} {esc} etc. send keystrokes mid-text
  *   - Undo Delete - Ctrl+Z or right-click restores the last deleted button
  *   - Export / Import buttons to and from a portable INI snippet file
- *   - Version 2.32
+ *   - Drag-and-drop button reordering in the normal list view
+ *   - Version 2.33
  *
  * Compile:
  *   cl simple_typer.c simple_typer.res /link user32.lib shell32.lib comdlg32.lib gdi32.lib dwmapi.lib comctl32.lib /subsystem:windows /out:simple_typer.exe
@@ -270,6 +271,20 @@ static HBRUSH       g_hbrSearchDk = NULL;
 static ButtonConfig g_undoButton;
 static int          g_undoIndex = -1;   /* position the button was deleted from */
 static int          g_undoValid = 0;    /* 1 if there is something to undo */
+
+/* Drag-and-drop reorder state.
+   A drag starts when the user holds the left button down on a button window
+   and moves more than DRAG_THRESHOLD pixels. The source button index and the
+   initial cursor position are recorded. While dragging, g_dragDropIdx tracks
+   the insertion slot (0..g_count) shown by the drop indicator line.
+   Drag is only available in the normal list view (not compact mode, not
+   the filtered search view). */
+#define DRAG_THRESHOLD 4
+static int   g_dragging    = 0;   /* 1 while a drag is in progress */
+static int   g_dragSrcIdx  = -1;  /* g_buttons index of the button being dragged */
+static int   g_dragDropIdx = -1;  /* insertion slot currently under the cursor */
+static POINT g_dragStart;         /* cursor position when the button was pressed */
+static int   g_dragOriginY = 0;   /* client-Y of the top of the source button */
 
 /* Fill-in-the-blank prompt */
 static char         g_promptResult[512];
@@ -1306,6 +1321,92 @@ static void ApplyFilter(void)
     InvalidateRect(g_hwndMain, NULL, TRUE);
 }
 
+/* ── Drag-and-drop helpers ───────────────────────────────────────────── */
+
+/* Returns the g_buttons index of the button whose window is hwndBtn,
+   or -1 if hwndBtn is not a button in the current list. */
+static int ButtonIndexFromHwnd(HWND hwndBtn)
+{
+    for (int i = 0; i < g_count; i++)
+        if (g_hwndBtns[i] == hwndBtn) return i;
+    return -1;
+}
+
+/* Given a client-Y coordinate on the main window, returns the insertion
+   slot (0..g_count) at which a dropped button should be inserted.
+   Slot 0 = before all buttons; slot g_count = after all buttons.
+   Only visible buttons (those with an hwnd) are considered as slot
+   boundaries; hidden or collapsed buttons are skipped. */
+static int DropSlotFromClientY(int cy)
+{
+    int best     = g_count;   /* default: drop at the end */
+    int bestDist = 0x7fffffff;
+    for (int i = 0; i < g_count; i++) {
+        if (!g_hwndBtns[i]) continue;
+        RECT r;
+        GetWindowRect(g_hwndBtns[i], &r);
+        POINT tl = { r.left, r.top };
+        ScreenToClient(g_hwndMain, &tl);
+        int midY = tl.y + (r.bottom - r.top) / 2;
+        /* slot i is the gap above button i */
+        int dist = abs(cy - tl.y);
+        if (dist < bestDist) { bestDist = dist; best = i; }
+        /* also test the gap below the last button */
+        int botDist = abs(cy - (tl.y + (r.bottom - r.top)));
+        if (botDist < bestDist) { bestDist = botDist; best = i + 1; }
+        (void)midY;
+    }
+    return best;
+}
+
+/* Draws (or erases) the horizontal drop-indicator line at slot dropIdx.
+   Called during WM_MOUSEMOVE and to erase the old line before drawing a
+   new one. Uses XOR mode so drawing twice restores the original pixels. */
+static void DrawDropLine(int dropIdx)
+{
+    if (dropIdx < 0 || dropIdx > g_count) return;
+
+    /* Find the Y coordinate for this slot boundary. */
+    int lineY = -1;
+    for (int i = 0; i < g_count; i++) {
+        if (!g_hwndBtns[i]) continue;
+        RECT r;
+        GetWindowRect(g_hwndBtns[i], &r);
+        POINT tl = { r.left, r.top };
+        ScreenToClient(g_hwndMain, &tl);
+        if (i == dropIdx) { lineY = tl.y - 1; break; }
+        /* slot after the last visible button */
+        if (dropIdx == i + 1 && i == g_count - 1)
+            lineY = tl.y + (r.bottom - r.top);
+    }
+    /* If still not found, drop at the very first button top */
+    if (lineY < 0) {
+        for (int i = 0; i < g_count; i++) {
+            if (!g_hwndBtns[i]) continue;
+            RECT r;
+            GetWindowRect(g_hwndBtns[i], &r);
+            POINT tl = { r.left, r.top };
+            ScreenToClient(g_hwndMain, &tl);
+            lineY = (dropIdx == 0) ? tl.y - 1 : tl.y + (r.bottom - r.top);
+            break;
+        }
+    }
+    if (lineY < 0) return;
+
+    HDC hdc = GetDC(g_hwndMain);
+    /* R2_NOT inverts the pixels so drawing twice cancels out (XOR line). */
+    int oldRop = SetROP2(hdc, R2_NOT);
+    HPEN hpen = CreatePen(PS_SOLID, 2, RGB(0, 0, 0));
+    HPEN hold = (HPEN)SelectObject(hdc, hpen);
+    RECT cr; GetClientRect(g_hwndMain, &cr);
+    MoveToEx(hdc, 10,            lineY, NULL);
+    LineTo  (hdc, cr.right - 10, lineY);
+    SelectObject(hdc, hold);
+    DeleteObject(hpen);
+    SetROP2(hdc, oldRop);
+    ReleaseDC(g_hwndMain, hdc);
+}
+
 /* ── Right-click context menu ────────────────────────────────────────── */
 static void ShowButtonContextMenu(HWND hwnd, int idx, POINT pt)
 {
@@ -1954,6 +2055,115 @@ static LRESULT CALLBACK MainProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
         }
         return 0;
 
+    case WM_PARENTNOTIFY: {
+        /* WM_PARENTNOTIFY fires when a child window receives WM_LBUTTONDOWN.
+           We use it to record the source button and initial cursor position
+           so that WM_MOUSEMOVE can decide whether a drag has started.
+           Drag is only available in normal list mode (not compact, not
+           search/filter), and only on actual data buttons (not Add Button). */
+        if (LOWORD(wParam) == WM_LBUTTONDOWN && !g_compactMode && !g_filterText[0]) {
+            HWND hChild = (HWND)lParam;
+            int idx = ButtonIndexFromHwnd(hChild);
+            if (idx >= 0) {
+                GetCursorPos(&g_dragStart);
+                ScreenToClient(hwnd, &g_dragStart);
+                RECT br; GetWindowRect(hChild, &br);
+                POINT tl = { br.left, br.top };
+                ScreenToClient(hwnd, &tl);
+                g_dragOriginY = tl.y;
+                g_dragSrcIdx  = idx;
+                g_dragging    = 0;   /* not yet - wait for threshold */
+                g_dragDropIdx = -1;
+            }
+        }
+        return 0;
+    }
+
+    case WM_MOUSEMOVE: {
+        if (g_dragSrcIdx < 0) break;   /* no button pressed */
+        POINT cur = { (short)LOWORD(lParam), (short)HIWORD(lParam) };
+
+        if (!g_dragging) {
+            /* Check whether the cursor has moved past the drag threshold. */
+            if (abs(cur.x - g_dragStart.x) < DRAG_THRESHOLD &&
+                abs(cur.y - g_dragStart.y) < DRAG_THRESHOLD) break;
+            /* Threshold exceeded: begin the drag. */
+            g_dragging = 1;
+            SetCapture(hwnd);
+            SetCursor(LoadCursor(NULL, IDC_SIZENS));
+        }
+
+        /* Erase old drop line, compute new slot, draw new drop line. */
+        if (g_dragDropIdx >= 0) DrawDropLine(g_dragDropIdx);
+        g_dragDropIdx = DropSlotFromClientY(cur.y);
+        /* Prevent dropping on the source slot or the one directly after it
+           (which would leave the button in the same position). */
+        if (g_dragDropIdx == g_dragSrcIdx || g_dragDropIdx == g_dragSrcIdx + 1)
+            g_dragDropIdx = -1;
+        if (g_dragDropIdx >= 0) DrawDropLine(g_dragDropIdx);
+        SetCursor(LoadCursor(NULL, IDC_SIZENS));
+        return 0;
+    }
+
+    case WM_LBUTTONUP: {
+        if (!g_dragging) {
+            /* No drag in progress; just clear the source tracking. */
+            g_dragSrcIdx = -1;
+            break;
+        }
+        /* End drag: erase indicator, release capture, perform the move. */
+        if (g_dragDropIdx >= 0) DrawDropLine(g_dragDropIdx);
+        ReleaseCapture();
+        SetCursor(LoadCursor(NULL, IDC_ARROW));
+
+        int src = g_dragSrcIdx, dst = g_dragDropIdx;
+        g_dragging    = 0;
+        g_dragSrcIdx  = -1;
+        g_dragDropIdx = -1;
+
+        if (dst >= 0 && dst != src && dst != src + 1) {
+            /* Move the button from src to dst (adjusting for removal offset). */
+            ButtonConfig tmp  = g_buttons[src];
+            HICON        icon = g_icons[src];
+            int          col  = g_collapsed[src];
+
+            /* Shift the gap left by removing src. */
+            for (int i = src; i < g_count - 1; i++) {
+                g_buttons[i]   = g_buttons[i + 1];
+                g_icons[i]     = g_icons[i + 1];
+                g_collapsed[i] = g_collapsed[i + 1];
+            }
+            /* Adjust dst for the removal. */
+            if (dst > src) dst--;
+            /* Open the gap at dst by shifting right. */
+            for (int i = g_count - 1; i > dst; i--) {
+                g_buttons[i]   = g_buttons[i - 1];
+                g_icons[i]     = g_icons[i - 1];
+                g_collapsed[i] = g_collapsed[i - 1];
+            }
+            g_buttons[dst]   = tmp;
+            g_icons[dst]     = icon;
+            g_collapsed[dst] = col;
+
+            RegisterAllHotkeys();
+            SaveAll();
+            RefreshMainWindow();
+        }
+        return 0;
+    }
+
+    case WM_CAPTURECHANGED: {
+        /* If mouse capture is stolen (e.g. by a dialog), cancel the drag cleanly. */
+        if (g_dragging) {
+            if (g_dragDropIdx >= 0) DrawDropLine(g_dragDropIdx);
+            g_dragging    = 0;
+            g_dragSrcIdx  = -1;
+            g_dragDropIdx = -1;
+            SetCursor(LoadCursor(NULL, IDC_ARROW));
+        }
+        break;
+    }
+
     case WM_CONTEXTMENU: {
         HWND hClicked = (HWND)wParam;
         POINT pt = { (short)LOWORD(lParam), (short)HIWORD(lParam) };
@@ -2236,6 +2446,12 @@ static LRESULT CALLBACK MainProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
                 "The Undo Delete item is grayed out until a button has been deleted. "
                 "You can also press Ctrl+Z at any time to undo the last deletion.\r\n"
                 "\r\n"
+                "DRAG-AND-DROP REORDERING\r\n"
+                "In the normal list view, hold the left mouse button on any button "
+                "and drag it up or down to reorder it. A horizontal line shows where "
+                "the button will land when you release. Drag-and-drop is not available "
+                "in compact mode or while a search filter is active.\r\n"
+                "\r\n"
                 "SETTINGS\r\n"
                 "Dark mode, font size, window width, always on top, minimize to "
                 "system tray, compact mode, window title, opacity, prefix/suffix.\r\n"
@@ -2273,7 +2489,7 @@ static LRESULT CALLBACK MainProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
 
         } else if(id==ID_HELP_ABOUT){
             ShowInfoDialog(hwnd,"About Simple Typer",
-                "Simple Typer\r\nVersion 2.32\r\n\r\n"
+                "Simple Typer\r\nVersion 2.33\r\n\r\n"
                 "Author:   UberGuidoZ\r\n"
                 "Contact:  https://github.com/UberGuidoZ");
 
