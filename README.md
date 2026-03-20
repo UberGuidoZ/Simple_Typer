@@ -24,6 +24,7 @@ Features:
  * System key tokens - {tab} {enter} {esc} etc. send keystrokes mid-text
  * Undo Delete - Ctrl+Z or right-click restores the last deleted button
  * Export / Import buttons to and from a portable INI snippet file
+ * Drag-and-drop button reordering in the normal list view
 
 ![Example use](https://raw.githubusercontent.com/UberGuidoZ/Simple_Typer/refs/heads/main/Documentation/05-Example_Use.gif)
 
