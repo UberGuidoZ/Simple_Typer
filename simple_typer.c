@@ -1,5 +1,5 @@
 /*
- * simple_typer.c - Simple Typer v2.34
+ * simple_typer.c - Simple Typer v2.35
  *
  * Each button types its stored text into whatever window had focus before the button was clicked.
  *
@@ -26,7 +26,7 @@
  *   - Undo Delete - Ctrl+Z or right-click restores the last deleted button
  *   - Export / Import buttons to and from a portable INI snippet file
  *   - Drag-and-drop button reordering in the normal list view
- *   - Version 2.34
+ *   - Version 2.35
  *
  * Compile:
  *   cl simple_typer.c simple_typer.res /link user32.lib shell32.lib comdlg32.lib gdi32.lib dwmapi.lib comctl32.lib /subsystem:windows /out:simple_typer.exe
@@ -81,6 +81,9 @@ static void SwitchProfile(int idx);
 static void WriteEscaped(FILE *f, const char *key, const char *val);
 static void ExportButtons(void);
 static void ImportButtons(void);
+static LRESULT CALLBACK ButtonSubclassProc(HWND hwnd, UINT msg, WPARAM wParam,
+                                            LPARAM lParam, UINT_PTR uIdSubclass,
+                                            DWORD_PTR dwRefData);
 
 /* ── IDs ─────────────────────────────────────────────────────────────── */
 #define ID_ADD_BTN            1
@@ -1179,6 +1182,7 @@ static void RefreshMainWindow(void)
                     WS_VISIBLE | WS_CHILD | BS_OWNERDRAW, 10, y, btnAreaW, h,
                     g_hwndMain, (HMENU)(UINT_PTR)(ID_BUTTON_BASE + i), g_hInst, NULL);
                 if (g_hFontBold) SendMessage(g_hwndBtns[i], WM_SETFONT, (WPARAM)g_hFontBold, FALSE);
+                SetWindowSubclass(g_hwndBtns[i], ButtonSubclassProc, 0, (DWORD_PTR)i);
                 y += h + 3;
 
             } else if (catCollapsed) {
@@ -1189,6 +1193,7 @@ static void RefreshMainWindow(void)
                 g_hwndBtns[i] = CreateWindow("BUTTON", "", WS_VISIBLE | WS_CHILD | BS_OWNERDRAW,
                     10, y, btnAreaW, 14, g_hwndMain,
                     (HMENU)(UINT_PTR)(ID_BUTTON_BASE + i), g_hInst, NULL);
+                SetWindowSubclass(g_hwndBtns[i], ButtonSubclassProc, 0, (DWORD_PTR)i);
                 y += 14 + 5;
 
             } else {
@@ -1196,6 +1201,7 @@ static void RefreshMainWindow(void)
                     WS_VISIBLE | WS_CHILD | BS_OWNERDRAW, 10, y, btnAreaW, 26,
                     g_hwndMain, (HMENU)(UINT_PTR)(ID_BUTTON_BASE + i), g_hInst, NULL);
                 if (g_hFont) SendMessage(g_hwndBtns[i], WM_SETFONT, (WPARAM)g_hFont, FALSE);
+                SetWindowSubclass(g_hwndBtns[i], ButtonSubclassProc, 0, (DWORD_PTR)i);
                 y += 26 + 5;
             }
         }
@@ -1408,6 +1414,44 @@ static void DrawDropLine(int dropIdx)
     DeleteObject(hpen);
     SetROP2(hdc, oldRop);
     ReleaseDC(g_hwndMain, hdc);
+}
+
+/* Subclass procedure installed on every list-mode button.
+   Intercepts WM_LBUTTONDOWN before DefWindowProc so the BUTTON control
+   never calls SetCapture on itself. The main window takes capture here,
+   guaranteeing that all subsequent WM_MOUSEMOVE and WM_LBUTTONUP messages
+   arrive at MainProc rather than at the child button.
+   dwRefData carries the g_buttons[] index for this button. */
+static LRESULT CALLBACK ButtonSubclassProc(HWND hwnd, UINT msg, WPARAM wParam,
+                                            LPARAM lParam, UINT_PTR uIdSubclass,
+                                            DWORD_PTR dwRefData)
+{
+    if (msg == WM_LBUTTONDOWN) {
+        int idx = (int)dwRefData;
+        /* lParam is in the button's own client coords; convert to main-window client. */
+        POINT pt = { (short)LOWORD(lParam), (short)HIWORD(lParam) };
+        ClientToScreen(hwnd, &pt);
+        ScreenToClient(g_hwndMain, &pt);
+
+        RECT br; GetWindowRect(hwnd, &br);
+        POINT tl = { br.left, br.top };
+        ScreenToClient(g_hwndMain, &tl);
+
+        g_dragStart   = pt;
+        g_dragOriginY = tl.y;
+        g_dragSrcIdx  = idx;
+        g_dragging    = 0;
+        g_dragDropIdx = -1;
+
+        /* Take capture on the main window before DefWindowProc runs.
+           Because we return 0 without calling DefSubclassProc, the BUTTON
+           control never executes its own WM_LBUTTONDOWN handler and never
+           calls SetCapture, so the main window keeps capture exclusively. */
+        SetCapture(g_hwndMain);
+        return 0;
+    }
+    (void)uIdSubclass;
+    return DefSubclassProc(hwnd, msg, wParam, lParam);
 }
 
 /* ── Right-click context menu ────────────────────────────────────────── */
@@ -2063,29 +2107,11 @@ static LRESULT CALLBACK MainProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
         }
         return 0;
 
-    case WM_PARENTNOTIFY: {
-        /* WM_PARENTNOTIFY fires when a child window receives WM_LBUTTONDOWN.
-           We use it to record the source button and initial cursor position
-           so that WM_MOUSEMOVE can decide whether a drag has started.
-           Drag is only available in normal list mode (not compact, not
-           search/filter), and only on actual data buttons (not Add Button). */
-        if (LOWORD(wParam) == WM_LBUTTONDOWN && !g_compactMode && !g_filterText[0]) {
-            HWND hChild = (HWND)lParam;
-            int idx = ButtonIndexFromHwnd(hChild);
-            if (idx >= 0) {
-                GetCursorPos(&g_dragStart);
-                ScreenToClient(hwnd, &g_dragStart);
-                RECT br; GetWindowRect(hChild, &br);
-                POINT tl = { br.left, br.top };
-                ScreenToClient(hwnd, &tl);
-                g_dragOriginY = tl.y;
-                g_dragSrcIdx  = idx;
-                g_dragging    = 0;   /* not yet - wait for threshold */
-                g_dragDropIdx = -1;
-            }
-        }
+    case WM_PARENTNOTIFY:
+        /* Drag initialisation is handled by ButtonSubclassProc, which
+           intercepts WM_LBUTTONDOWN in each button before DefWindowProc runs.
+           WM_PARENTNOTIFY is not used for drag tracking. */
         return 0;
-    }
 
     case WM_MOUSEMOVE: {
         if (g_dragSrcIdx < 0) break;   /* no button pressed */
@@ -2095,9 +2121,8 @@ static LRESULT CALLBACK MainProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
             /* Check whether the cursor has moved past the drag threshold. */
             if (abs(cur.x - g_dragStart.x) < DRAG_THRESHOLD &&
                 abs(cur.y - g_dragStart.y) < DRAG_THRESHOLD) break;
-            /* Threshold exceeded: begin the drag. */
+            /* Threshold exceeded: begin the visual drag. */
             g_dragging = 1;
-            SetCapture(hwnd);
             SetCursor(LoadCursor(NULL, IDC_SIZENS));
         }
 
@@ -2114,20 +2139,33 @@ static LRESULT CALLBACK MainProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
     }
 
     case WM_LBUTTONUP: {
+        if (g_dragSrcIdx < 0) break;
+
         if (!g_dragging) {
-            /* No drag in progress; just clear the source tracking. */
+            /* User clicked without crossing the drag threshold. We stole capture
+               in WM_PARENTNOTIFY so the button never received WM_LBUTTONUP and
+               never fired BN_CLICKED. Post WM_COMMAND now to simulate it. */
+            int idx = g_dragSrcIdx;
             g_dragSrcIdx = -1;
+            ReleaseCapture();
+            PostMessage(hwnd, WM_COMMAND,
+                        MAKEWPARAM(ID_BUTTON_BASE + idx, BN_CLICKED),
+                        g_hwndBtns[idx] ? (LPARAM)g_hwndBtns[idx] : 0);
             break;
         }
-        /* End drag: erase indicator, release capture, perform the move. */
-        if (g_dragDropIdx >= 0) DrawDropLine(g_dragDropIdx);
-        ReleaseCapture();
-        SetCursor(LoadCursor(NULL, IDC_ARROW));
-
+        /* End drag: save src/dst and clear ALL drag state BEFORE calling
+           ReleaseCapture. ReleaseCapture sends WM_CAPTURECHANGED synchronously
+           (it does not return until the handler finishes). WM_CAPTURECHANGED
+           checks g_dragging to decide whether to cancel; clearing it here first
+           makes that handler a no-op so the drop line is not redrawn and the
+           state is not double-zeroed. */
         int src = g_dragSrcIdx, dst = g_dragDropIdx;
         g_dragging    = 0;
         g_dragSrcIdx  = -1;
         g_dragDropIdx = -1;
+        if (dst >= 0) DrawDropLine(dst);   /* erase the indicator line */
+        ReleaseCapture();
+        SetCursor(LoadCursor(NULL, IDC_ARROW));
 
         if (dst >= 0 && dst != src && dst != src + 1) {
             /* Move the button from src to dst (adjusting for removal offset). */
@@ -2497,7 +2535,7 @@ static LRESULT CALLBACK MainProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
 
         } else if(id==ID_HELP_ABOUT){
             ShowInfoDialog(hwnd,"About Simple Typer",
-                "Simple Typer\r\nVersion 2.34\r\n\r\n"
+                "Simple Typer\r\nVersion 2.35\r\n\r\n"
                 "Author:   UberGuidoZ\r\n"
                 "Contact:  https://github.com/UberGuidoZ");
 
