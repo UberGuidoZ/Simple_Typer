@@ -1,5 +1,5 @@
 /*
- * simple_typer.c - Simple Typer v2.33
+ * simple_typer.c - Simple Typer v2.34
  *
  * Each button types its stored text into whatever window had focus before the button was clicked.
  *
@@ -26,7 +26,7 @@
  *   - Undo Delete - Ctrl+Z or right-click restores the last deleted button
  *   - Export / Import buttons to and from a portable INI snippet file
  *   - Drag-and-drop button reordering in the normal list view
- *   - Version 2.33
+ *   - Version 2.34
  *
  * Compile:
  *   cl simple_typer.c simple_typer.res /link user32.lib shell32.lib comdlg32.lib gdi32.lib dwmapi.lib comctl32.lib /subsystem:windows /out:simple_typer.exe
@@ -178,8 +178,8 @@ static void ImportButtons(void);
 #define DK_CAT_TEXT RGB(200, 225, 255)
 #define LT_CAT_TEXT RGB( 20,  50, 100)
 
-static const char *g_menuLabels[] = { "Instructions", "Settings", "Profiles", "Export", "Import", "About" };
-static const UINT  g_menuIDs[]    = { ID_HELP_INSTRUCTIONS, ID_SETTINGS, ID_PROFILES_MENU, ID_EXPORT_BUTTONS, ID_IMPORT_BUTTONS, ID_HELP_ABOUT };
+static const char *g_menuLabels[] = { "Instructions", "Settings", "Profiles", "About" };
+static const UINT  g_menuIDs[]    = { ID_HELP_INSTRUCTIONS, ID_SETTINGS, ID_PROFILES_MENU, ID_HELP_ABOUT };
 
 /* ── Hotkey key table ────────────────────────────────────────────────── */
 static const char *g_hkNames[] = {
@@ -523,6 +523,9 @@ static void ShowProfilesMenu(HWND hwnd, int x, int y)
     AppendMenu(hM, MF_STRING, IDM_PROFILE_NEW, "New Profile...");
     AppendMenu(hM, MF_STRING | (g_activeProfile == 0 ? MF_GRAYED : 0),
                IDM_PROFILE_DELETE, "Delete Current Profile");
+    AppendMenu(hM, MF_SEPARATOR, 0, NULL);
+    AppendMenu(hM, MF_STRING, ID_EXPORT_BUTTONS, "Export Buttons...");
+    AppendMenu(hM, MF_STRING, ID_IMPORT_BUTTONS, "Import Buttons...");
     SetForegroundWindow(hwnd);
     TrackPopupMenu(hM, TPM_LEFTBUTTON, x, y, 0, hwnd, NULL);
     DestroyMenu(hM);
@@ -2037,6 +2040,9 @@ static LRESULT CALLBACK MainProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
             AppendMenu(hSub, MF_STRING, IDM_PROFILE_NEW, "New Profile...");
             AppendMenu(hSub, MF_STRING | (g_activeProfile==0 ? MF_GRAYED : 0),
                        IDM_PROFILE_DELETE, "Delete Current Profile");
+            AppendMenu(hSub, MF_SEPARATOR, 0, NULL);
+            AppendMenu(hSub, MF_STRING, ID_EXPORT_BUTTONS, "Export Buttons...");
+            AppendMenu(hSub, MF_STRING, ID_IMPORT_BUTTONS, "Import Buttons...");
             HMENU hM = CreatePopupMenu();
             AppendMenu(hM, MF_POPUP, (UINT_PTR)hSub, "Profiles");
             AppendMenu(hM, MF_SEPARATOR, 0, NULL);
@@ -2046,12 +2052,14 @@ static LRESULT CALLBACK MainProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
             SetForegroundWindow(hwnd);
             int cmd = TrackPopupMenu(hM, TPM_RETURNCMD|TPM_RIGHTBUTTON, pt.x, pt.y, 0, hwnd, NULL);
             DestroyMenu(hM); /* also destroys hSub */
-            if      (cmd == IDM_TRAY_RESTORE) { RemoveTrayIcon(); ShowWindow(hwnd,SW_RESTORE); SetForegroundWindow(hwnd); }
-            else if (cmd == IDM_TRAY_EXIT)    { RemoveTrayIcon(); DestroyWindow(hwnd); }
+            if      (cmd == IDM_TRAY_RESTORE)    { RemoveTrayIcon(); ShowWindow(hwnd,SW_RESTORE); SetForegroundWindow(hwnd); }
+            else if (cmd == IDM_TRAY_EXIT)        { RemoveTrayIcon(); DestroyWindow(hwnd); }
             else if (cmd >= IDM_PROFILE_BASE && cmd < IDM_PROFILE_BASE + g_profileCount)
                 SwitchProfile(cmd - IDM_PROFILE_BASE);
-            else if (cmd == IDM_PROFILE_NEW)    PostMessage(hwnd, WM_COMMAND, IDM_PROFILE_NEW,    0);
-            else if (cmd == IDM_PROFILE_DELETE) PostMessage(hwnd, WM_COMMAND, IDM_PROFILE_DELETE, 0);
+            else if (cmd == IDM_PROFILE_NEW)      PostMessage(hwnd, WM_COMMAND, IDM_PROFILE_NEW,      0);
+            else if (cmd == IDM_PROFILE_DELETE)   PostMessage(hwnd, WM_COMMAND, IDM_PROFILE_DELETE,   0);
+            else if (cmd == ID_EXPORT_BUTTONS)    PostMessage(hwnd, WM_COMMAND, ID_EXPORT_BUTTONS,    0);
+            else if (cmd == ID_IMPORT_BUTTONS)    PostMessage(hwnd, WM_COMMAND, ID_IMPORT_BUTTONS,    0);
         }
         return 0;
 
@@ -2489,7 +2497,7 @@ static LRESULT CALLBACK MainProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
 
         } else if(id==ID_HELP_ABOUT){
             ShowInfoDialog(hwnd,"About Simple Typer",
-                "Simple Typer\r\nVersion 2.33\r\n\r\n"
+                "Simple Typer\r\nVersion 2.34\r\n\r\n"
                 "Author:   UberGuidoZ\r\n"
                 "Contact:  https://github.com/UberGuidoZ");
 
