@@ -1,5 +1,5 @@
 /*
- * simple_typer.c - Simple Typer v2.35
+ * simple_typer.c - Simple Typer v2.36
  *
  * Each button types its stored text into whatever window had focus before the button was clicked.
  *
@@ -26,7 +26,7 @@
  *   - Undo Delete - Ctrl+Z or right-click restores the last deleted button
  *   - Export / Import buttons to and from a portable INI snippet file
  *   - Drag-and-drop button reordering in the normal list view
- *   - Version 2.35
+ *   - Version 2.36
  *
  * Compile:
  *   cl simple_typer.c simple_typer.res /link user32.lib shell32.lib comdlg32.lib gdi32.lib dwmapi.lib comctl32.lib /subsystem:windows /out:simple_typer.exe
@@ -287,7 +287,6 @@ static int   g_dragging    = 0;   /* 1 while a drag is in progress */
 static int   g_dragSrcIdx  = -1;  /* g_buttons index of the button being dragged */
 static int   g_dragDropIdx = -1;  /* insertion slot currently under the cursor */
 static POINT g_dragStart;         /* cursor position when the button was pressed */
-static int   g_dragOriginY = 0;   /* client-Y of the top of the source button */
 
 /* Fill-in-the-blank prompt */
 static char         g_promptResult[512];
@@ -1036,7 +1035,6 @@ static void DrawButton(LPDRAWITEMSTRUCT dis, int idx)
             FillRect(dis->hDC, &rc, (HBRUSH)(COLOR_BTNFACE + 1));
         }
         int midY = (rc.top + rc.bottom) / 2;
-        EnsureDarkGDI();
         HPEN hop = (HPEN)SelectObject(dis->hDC, g_darkMode ? g_hpenDkSep : g_hpenLtSep);
         MoveToEx(dis->hDC, rc.left + 6, midY, NULL);
         LineTo(dis->hDC, rc.right - 6, midY);
@@ -1332,15 +1330,6 @@ static void ApplyFilter(void)
 
 /* ── Drag-and-drop helpers ───────────────────────────────────────────── */
 
-/* Returns the g_buttons index of the button whose window is hwndBtn,
-   or -1 if hwndBtn is not a button in the current list. */
-static int ButtonIndexFromHwnd(HWND hwndBtn)
-{
-    for (int i = 0; i < g_count; i++)
-        if (g_hwndBtns[i] == hwndBtn) return i;
-    return -1;
-}
-
 /* Given a client-Y coordinate on the main window, returns the insertion
    slot (0..g_count) at which a dropped button should be inserted.
    Slot 0 = before all buttons; slot g_count = after all buttons.
@@ -1356,14 +1345,12 @@ static int DropSlotFromClientY(int cy)
         GetWindowRect(g_hwndBtns[i], &r);
         POINT tl = { r.left, r.top };
         ScreenToClient(g_hwndMain, &tl);
-        int midY = tl.y + (r.bottom - r.top) / 2;
         /* slot i is the gap above button i */
         int dist = abs(cy - tl.y);
         if (dist < bestDist) { bestDist = dist; best = i; }
         /* also test the gap below the last button */
         int botDist = abs(cy - (tl.y + (r.bottom - r.top)));
         if (botDist < bestDist) { bestDist = botDist; best = i + 1; }
-        (void)midY;
     }
     return best;
 }
@@ -1433,12 +1420,7 @@ static LRESULT CALLBACK ButtonSubclassProc(HWND hwnd, UINT msg, WPARAM wParam,
         ClientToScreen(hwnd, &pt);
         ScreenToClient(g_hwndMain, &pt);
 
-        RECT br; GetWindowRect(hwnd, &br);
-        POINT tl = { br.left, br.top };
-        ScreenToClient(g_hwndMain, &tl);
-
         g_dragStart   = pt;
-        g_dragOriginY = tl.y;
         g_dragSrcIdx  = idx;
         g_dragging    = 0;
         g_dragDropIdx = -1;
@@ -1646,7 +1628,7 @@ static LRESULT CALLBACK AddDlgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lP
         CreateWindow("EDIT",edit?bc->name:"",WS_VISIBLE|WS_CHILD|WS_BORDER|WS_TABSTOP|ES_AUTOHSCROLL,
                      10,30,390,22,hwnd,(HMENU)IDC_NAME_EDIT,g_hInst,NULL);
         /* ── Text ── */
-        CreateWindow("STATIC","Text to type:  (use {date} {time} {clipboard} {?})",WS_VISIBLE|WS_CHILD,
+        CreateWindow("STATIC","Text to type:  (use {date} {isodate} {time} {clipboard} {?})",WS_VISIBLE|WS_CHILD,
                      10,62,390,16,hwnd,NULL,g_hInst,NULL);
         CreateWindow("STATIC","Keys: {tab} {enter} {esc} {backspace} {del}",WS_VISIBLE|WS_CHILD,
                      10,78,390,16,hwnd,NULL,g_hInst,NULL);
@@ -2035,6 +2017,9 @@ static LRESULT CALLBACK MainProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
                 EmptyClipboard();
                 if (g_hOldClip) { SetClipboardData(CF_UNICODETEXT, g_hOldClip); g_hOldClip=NULL; }
                 CloseClipboard();
+            } else {
+                /* Could not reopen the clipboard; free the saved handle to avoid a leak. */
+                if (g_hOldClip) { GlobalFree(g_hOldClip); g_hOldClip=NULL; }
             }
             FireNextAction();
         } else if (wParam == TIMER_KEY) {
@@ -2142,9 +2127,9 @@ static LRESULT CALLBACK MainProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
         if (g_dragSrcIdx < 0) break;
 
         if (!g_dragging) {
-            /* User clicked without crossing the drag threshold. We stole capture
-               in WM_PARENTNOTIFY so the button never received WM_LBUTTONUP and
-               never fired BN_CLICKED. Post WM_COMMAND now to simulate it. */
+            /* User clicked without crossing the drag threshold. ButtonSubclassProc
+               stole capture so the button never received WM_LBUTTONUP and never
+               fired BN_CLICKED. Post WM_COMMAND now to simulate it. */
             int idx = g_dragSrcIdx;
             g_dragSrcIdx = -1;
             ReleaseCapture();
@@ -2199,14 +2184,17 @@ static LRESULT CALLBACK MainProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
     }
 
     case WM_CAPTURECHANGED: {
-        /* If mouse capture is stolen (e.g. by a dialog), cancel the drag cleanly. */
+        /* If mouse capture is stolen (e.g. by a dialog), cancel the drag cleanly.
+           g_dragSrcIdx is cleared unconditionally because capture can be stolen
+           before the drag threshold is crossed, leaving g_dragging at 0 while
+           g_dragSrcIdx is still set. */
         if (g_dragging) {
             if (g_dragDropIdx >= 0) DrawDropLine(g_dragDropIdx);
             g_dragging    = 0;
-            g_dragSrcIdx  = -1;
             g_dragDropIdx = -1;
             SetCursor(LoadCursor(NULL, IDC_ARROW));
         }
+        g_dragSrcIdx = -1;
         break;
     }
 
@@ -2362,9 +2350,8 @@ static LRESULT CALLBACK MainProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
                 LoadSingleButtonIcon(ins);
                 RegisterAllHotkeys(); SaveAll(); RefreshMainWindow();
             }
-            SwitchProfile(id - IDM_PROFILE_BASE);
 
-        } else if(id == ID_PROFILES_MENU){
+        } else if(id >= IDM_PROFILE_BASE && id < IDM_PROFILE_BASE + g_profileCount){
             POINT pt; GetCursorPos(&pt);
             ShowProfilesMenu(hwnd, pt.x, pt.y);
 
@@ -2535,7 +2522,7 @@ static LRESULT CALLBACK MainProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
 
         } else if(id==ID_HELP_ABOUT){
             ShowInfoDialog(hwnd,"About Simple Typer",
-                "Simple Typer\r\nVersion 2.35\r\n\r\n"
+                "Simple Typer\r\nVersion 2.36\r\n\r\n"
                 "Author:   UberGuidoZ\r\n"
                 "Contact:  https://github.com/UberGuidoZ");
 
