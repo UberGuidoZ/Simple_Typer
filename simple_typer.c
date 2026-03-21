@@ -1,5 +1,5 @@
 /*
- * simple_typer.c - Simple Typer v2.36
+ * simple_typer.c - Simple Typer v2.37
  *
  * Each button types its stored text into whatever window had focus before the button was clicked.
  *
@@ -26,7 +26,7 @@
  *   - Undo Delete - Ctrl+Z or right-click restores the last deleted button
  *   - Export / Import buttons to and from a portable INI snippet file
  *   - Drag-and-drop button reordering in the normal list view
- *   - Version 2.36
+ *   - Version 2.37
  *
  * Compile:
  *   cl simple_typer.c simple_typer.res /link user32.lib shell32.lib comdlg32.lib gdi32.lib dwmapi.lib comctl32.lib /subsystem:windows /out:simple_typer.exe
@@ -2352,10 +2352,13 @@ static LRESULT CALLBACK MainProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
             }
 
         } else if(id >= IDM_PROFILE_BASE && id < IDM_PROFILE_BASE + g_profileCount){
+            SwitchProfile(id - IDM_PROFILE_BASE);
+
+        } else if(id == ID_PROFILES_MENU){
             POINT pt; GetCursorPos(&pt);
             ShowProfilesMenu(hwnd, pt.x, pt.y);
 
-                } else if(id == IDM_PROFILE_NEW){
+        } else if(id == IDM_PROFILE_NEW){
             /* Reuse prompt dialog for the profile name */
             if(g_hwndDlg){ SetForegroundWindow(g_hwndDlg); return 0; }
             g_promptResult[0]='\0'; g_promptDone=0; g_promptCancelled=0;
@@ -2522,7 +2525,7 @@ static LRESULT CALLBACK MainProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
 
         } else if(id==ID_HELP_ABOUT){
             ShowInfoDialog(hwnd,"About Simple Typer",
-                "Simple Typer\r\nVersion 2.36\r\n\r\n"
+                "Simple Typer\r\nVersion 2.37\r\n\r\n"
                 "Author:   UberGuidoZ\r\n"
                 "Contact:  https://github.com/UberGuidoZ");
 
