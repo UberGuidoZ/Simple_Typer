@@ -26,22 +26,22 @@ Features:
  * Export / Import buttons to and from a portable INI snippet file
  * Drag-and-drop button reordering in the normal list view
 
-![Example use](https://raw.githubusercontent.com/UberGuidoZ/Simple_Typer/refs/heads/main/Documentation/05-Example_Use.gif)
+![Example use](https://raw.githubusercontent.com/UberGuidoZ/Simple_Typer/refs/heads/main/Documentation/6-Example_Use.gif)
 
 Main Window<br>
-![Main Window](https://raw.githubusercontent.com/UberGuidoZ/Simple_Typer/refs/heads/main/Documentation/01-Main_Window.png)
+![Main Window](https://raw.githubusercontent.com/UberGuidoZ/Simple_Typer/refs/heads/main/Documentation/1-Main_Window.png)
 
 Add Button<br>
-![Add Button](https://raw.githubusercontent.com/UberGuidoZ/Simple_Typer/refs/heads/main/Documentation/05-Button_Add.png)
+![Add Button](https://raw.githubusercontent.com/UberGuidoZ/Simple_Typer/refs/heads/main/Documentation/5-Button_Add.png)
 
 Settings<br>
-![Settings](https://raw.githubusercontent.com/UberGuidoZ/Simple_Typer/refs/heads/main/Documentation/02-Settings.png)
+![Settings](https://raw.githubusercontent.com/UberGuidoZ/Simple_Typer/refs/heads/main/Documentation/2-Settings.png)
 
 Profiles<br>
-![Profiles](https://raw.githubusercontent.com/UberGuidoZ/Simple_Typer/refs/heads/main/Documentation/03-Profiles.png)
+![Profiles](https://raw.githubusercontent.com/UberGuidoZ/Simple_Typer/refs/heads/main/Documentation/3-Profiles.png)
 
 Instructions<br>
-![Instructions](https://raw.githubusercontent.com/UberGuidoZ/Simple_Typer/refs/heads/main/Documentation/04-Instructions.png)
+![Instructions](https://raw.githubusercontent.com/UberGuidoZ/Simple_Typer/refs/heads/main/Documentation/4-Instructions.png)
 
 ## Donation Information
 
