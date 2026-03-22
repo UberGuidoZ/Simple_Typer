@@ -1,5 +1,5 @@
 /*
- * simple_typer.c - Simple Typer v2.37
+ * simple_typer.c - Simple Typer v2.38
  *
  * Each button types its stored text into whatever window had focus before the button was clicked.
  *
@@ -26,10 +26,50 @@
  *   - Undo Delete - Ctrl+Z or right-click restores the last deleted button
  *   - Export / Import buttons to and from a portable INI snippet file
  *   - Drag-and-drop button reordering in the normal list view
- *   - Version 2.37
+ *   - Version 2.38
  *
  * Compile:
  *   cl simple_typer.c simple_typer.res /link user32.lib shell32.lib comdlg32.lib gdi32.lib dwmapi.lib comctl32.lib /subsystem:windows /out:simple_typer.exe
+ */
+
+/*
+ * v2.38 -- Bug Fixes, Security, Optimizations
+ *
+ * Bug Fixes
+ *   - Fixed MSG pmsg uninitialized in both prompt modal loops (FireButton and
+ *     IDM_PROFILE_NEW). When GetMessage returned -1 (invalid HWND), the
+ *     post-loop WM_QUIT check read indeterminate memory. Both declarations
+ *     are now initialized to {0}.
+ *   - Fixed DrawDropLine fallback Y coordinate being wrong for any dropIdx > 1.
+ *     The previous fallback always resolved to the first visible button, drawing
+ *     the drop indicator at the wrong position. The fallback now walks backward
+ *     from the last visible button to find the correct slot boundary.
+ *   - Fixed EncodeNewlines and DecodeNewlines writing dst[0] out of bounds when
+ *     dstSize == 0. The signed guard (j < dstSize-2) evaluates false for zero,
+ *     leaving the unconditional dst[j] = '\0' as an out-of-bounds write. Both
+ *     functions now return immediately when dstSize <= 0.
+ *
+ * Security
+ *   - Clarified icon-path UNC/device-path rejection comment. The existing check
+ *     (ip[0]=='\\' && ip[1]=='\\') already blocks Win32 device paths (\\.\,
+ *     \\?\) as well as UNC paths; the comment now documents both cases explicitly.
+ *
+ * Optimizations
+ *   - RepaintMenuBar (called on every WM_NCPAINT and WM_NCACTIVATE) previously
+ *     created and destroyed a DK_MENU_BG brush on each call. It now uses a new
+ *     cached object g_hbrDkMenuBg managed by EnsureDarkGDI/FreeDarkGDI.
+ *   - WM_DRAWITEM menu handler previously created and destroyed two brushes
+ *     (DK_MENU_BG and DK_MENU_HOT) on every hover/unhover event. Both are now
+ *     cached as g_hbrDkMenuBg and g_hbrDkMenuHot alongside the other dark-mode
+ *     GDI objects.
+ *   - DrawDropLine previously created and destroyed a pen on every WM_MOUSEMOVE
+ *     during a drag (twice per event: erase + redraw). The pen is now cached as
+ *     g_hpenDropLine and managed by EnsureDarkGDI/FreeDarkGDI.
+ *
+ * Minor
+ *   - g_tooltipText storage widened from [128] to [160] to match the tipbuf
+ *     build buffer, preventing silent truncation of tooltip text containing
+ *     long hotkey strings or category-name prefixes.
  */
 
 #include <windows.h>
@@ -255,6 +295,9 @@ static HPEN         g_hpenDkSep   = NULL;    /* cached DK_SEP separator pen */
 static HPEN         g_hpenLtSep   = NULL;    /* cached LT_SEP separator pen */
 static HBRUSH       g_hbrCatDk    = NULL;    /* cached DK_CAT_BG category header brush */
 static HBRUSH       g_hbrCatLt    = NULL;    /* cached LT_CAT_BG category header brush */
+static HBRUSH       g_hbrDkMenuBg = NULL;    /* cached DK_MENU_BG brush (menu bar + WM_DRAWITEM) */
+static HBRUSH       g_hbrDkMenuHot= NULL;    /* cached DK_MENU_HOT brush (WM_DRAWITEM hover) */
+static HPEN         g_hpenDropLine= NULL;    /* cached drop-indicator pen for drag-and-drop */
 static HFONT        g_hFont       = NULL;
 static HFONT        g_hFontBold   = NULL;   /* bold font for category headers */
 static int          g_trayAdded   = 0;
@@ -265,7 +308,7 @@ static int          g_pendingIdx  = -1;
 static COLORREF     g_settingBtnColor;
 static COLORREF     g_customColors[16];
 static HWND         g_hwndTooltip = NULL;
-static char         g_tooltipText[MAX_BUTTONS][128];
+static char         g_tooltipText[MAX_BUTTONS][160];
 static HWND         g_hwndSearch  = NULL;
 static char         g_filterText[256] = "";
 static HBRUSH       g_hbrSearchDk = NULL;
@@ -551,6 +594,9 @@ static void GetBasePath(void)
 
 static void EncodeNewlines(const char *src, char *dst, int dstSize)
 {
+    /* Guard: a zero-size buffer would make the loop condition (j < dstSize-2)
+       always false as an unsigned comparison, then write dst[0] out of bounds. */
+    if (dstSize <= 0) return;
     int j = 0;
     for (int i = 0; src[i] && j < dstSize - 2; i++) {
         if (src[i] == '\r') continue;
@@ -562,6 +608,8 @@ static void EncodeNewlines(const char *src, char *dst, int dstSize)
 
 static void DecodeNewlines(const char *src, char *dst, int dstSize)
 {
+    /* Guard: same rationale as EncodeNewlines above. */
+    if (dstSize <= 0) return;
     int j = 0;
     for (int i = 0; src[i] && j < dstSize - 2; i++) {
         if (src[i] == '\\' && src[i + 1] == 'n') {
@@ -712,6 +760,9 @@ static void EnsureDarkGDI(void)
     if (!g_hpenLtSep)    g_hpenLtSep    = CreatePen(PS_SOLID, 1, LT_SEP);
     if (!g_hbrCatDk)     g_hbrCatDk     = CreateSolidBrush(DK_CAT_BG);
     if (!g_hbrCatLt)     g_hbrCatLt     = CreateSolidBrush(LT_CAT_BG);
+    if (!g_hbrDkMenuBg)  g_hbrDkMenuBg  = CreateSolidBrush(DK_MENU_BG);
+    if (!g_hbrDkMenuHot) g_hbrDkMenuHot = CreateSolidBrush(DK_MENU_HOT);
+    if (!g_hpenDropLine) g_hpenDropLine = CreatePen(PS_SOLID, 2, RGB(0, 0, 0));
 }
 
 /* Releases all cached dark-mode GDI objects. Called when toggling dark mode
@@ -725,6 +776,9 @@ static void FreeDarkGDI(void)
     if (g_hpenLtSep)    { DeleteObject(g_hpenLtSep);    g_hpenLtSep    = NULL; }
     if (g_hbrCatDk)     { DeleteObject(g_hbrCatDk);     g_hbrCatDk     = NULL; }
     if (g_hbrCatLt)     { DeleteObject(g_hbrCatLt);     g_hbrCatLt     = NULL; }
+    if (g_hbrDkMenuBg)  { DeleteObject(g_hbrDkMenuBg);  g_hbrDkMenuBg  = NULL; }
+    if (g_hbrDkMenuHot) { DeleteObject(g_hbrDkMenuHot); g_hbrDkMenuHot = NULL; }
+    if (g_hpenDropLine) { DeleteObject(g_hpenDropLine); g_hpenDropLine = NULL; }
 }
 
 /* Loads or reloads the icon for a single button slot without touching any
@@ -736,8 +790,10 @@ static void LoadSingleButtonIcon(int i)
     if (g_icons[i]) { DestroyIcon(g_icons[i]); g_icons[i] = NULL; }
     if (!g_buttons[i].iconPath[0] || g_buttons[i].isSeparator || g_buttons[i].isCategory)
         return;
-    /* Reject UNC paths (\\server\share) to prevent outbound network requests
-       triggered by a malicious or corrupted INI file. */
+    /* Reject UNC paths (\\server\share) and Win32 device paths (\\.\, \\?\)
+       to prevent outbound network requests or object-manager side-effects
+       triggered by a malicious or corrupted INI file. Both start with two
+       backslashes, so the single check below covers all four variants. */
     const char *ip = g_buttons[i].iconPath;
     if (ip[0] == '\\' && ip[1] == '\\') return;
     if (ip[0] == '/'  && ip[1] == '/')  return;
@@ -1260,7 +1316,7 @@ static void RefreshMainWindow(void)
             if (!tipbuf[0]) continue;
 
             /* copy into stable per-button buffer */
-            strncpy(g_tooltipText[i], tipbuf, 127); g_tooltipText[i][127] = '\0';
+            strncpy(g_tooltipText[i], tipbuf, 159); g_tooltipText[i][159] = '\0';
 
             TOOLINFO ti; ZeroMemory(&ti, sizeof(ti));
             ti.cbSize   = sizeof(TOOLINFO);
@@ -1375,15 +1431,20 @@ static void DrawDropLine(int dropIdx)
         if (dropIdx == i + 1 && i == g_count - 1)
             lineY = tl.y + (r.bottom - r.top);
     }
-    /* If still not found, drop at the very first button top */
+    /* Fallback: walk backward to find the nearest visible button boundary.
+       The previous forward-only scan could land at the wrong Y for any
+       dropIdx > 1 because it always stopped at the FIRST visible button. */
     if (lineY < 0) {
-        for (int i = 0; i < g_count; i++) {
+        for (int i = g_count - 1; i >= 0; i--) {
             if (!g_hwndBtns[i]) continue;
             RECT r;
             GetWindowRect(g_hwndBtns[i], &r);
             POINT tl = { r.left, r.top };
             ScreenToClient(g_hwndMain, &tl);
-            lineY = (dropIdx == 0) ? tl.y - 1 : tl.y + (r.bottom - r.top);
+            if (dropIdx > i)
+                lineY = tl.y + (r.bottom - r.top);  /* below last visible */
+            else
+                lineY = tl.y - 1;                   /* above first visible */
             break;
         }
     }
@@ -1392,13 +1453,14 @@ static void DrawDropLine(int dropIdx)
     HDC hdc = GetDC(g_hwndMain);
     /* R2_NOT inverts the pixels so drawing twice cancels out (XOR line). */
     int oldRop = SetROP2(hdc, R2_NOT);
-    HPEN hpen = CreatePen(PS_SOLID, 2, RGB(0, 0, 0));
-    HPEN hold = (HPEN)SelectObject(hdc, hpen);
+    /* Use cached pen; created once and reused across all drag mouse-move events. */
+    if (!g_hpenDropLine) g_hpenDropLine = CreatePen(PS_SOLID, 2, RGB(0, 0, 0));
+    HPEN hold = (HPEN)SelectObject(hdc, g_hpenDropLine);
     RECT cr; GetClientRect(g_hwndMain, &cr);
     MoveToEx(hdc, 10,            lineY, NULL);
     LineTo  (hdc, cr.right - 10, lineY);
     SelectObject(hdc, hold);
-    DeleteObject(hpen);
+    /* Do NOT DeleteObject -- g_hpenDropLine is a persistent cached object. */
     SetROP2(hdc, oldRop);
     ReleaseDC(g_hwndMain, hdc);
 }
@@ -1903,7 +1965,9 @@ static void FireButton(int idx)
         g_hwndDlg = hPr;
         SetTitleBarDark(hPr, g_darkMode);
         ShowWindow(hPr, SW_SHOW); UpdateWindow(hPr);
-        MSG pmsg;
+        /* Initialize to zero so pmsg.message is well-defined if GetMessage
+           never runs (e.g. returns -1 immediately due to an invalid HWND). */
+        MSG pmsg = {0};
         /* Use > 0 so WM_QUIT (return value 0) exits the loop without being swallowed. */
         while (!g_promptDone && GetMessage(&pmsg, NULL, 0, 0) > 0) {
             if (IsWindow(hPr) && IsDialogMessage(hPr, &pmsg)) continue;
@@ -1955,7 +2019,9 @@ static void RepaintMenuBar(HWND hwnd)
     HDC hdc = GetWindowDC(hwnd);
     RECT rcBar = { mbiBar.rcBar.left - rcWin.left, mbiBar.rcBar.top - rcWin.top,
                    mbiBar.rcBar.right - rcWin.left, mbiBar.rcBar.bottom - rcWin.top };
-    HBRUSH hbr = CreateSolidBrush(DK_MENU_BG); FillRect(hdc, &rcBar, hbr); DeleteObject(hbr);
+    /* Use cached brush -- called on every WM_NCPAINT/WM_NCACTIVATE. */
+    EnsureDarkGDI();
+    FillRect(hdc, &rcBar, g_hbrDkMenuBg);
     SetBkMode(hdc, TRANSPARENT); SetTextColor(hdc, DK_TEXT);
     HFONT hOld = (HFONT)SelectObject(hdc, (HFONT)GetStockObject(DEFAULT_GUI_FONT));
     int n = sizeof(g_menuLabels) / sizeof(g_menuLabels[0]);
@@ -2250,8 +2316,9 @@ static LRESULT CALLBACK MainProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
         if(dis->CtlType==ODT_MENU){
             const char *label=(const char*)dis->itemData;
             BOOL hot=(dis->itemState&(ODS_SELECTED|ODS_HOTLIGHT))!=0;
-            HBRUSH hbr=CreateSolidBrush(hot?DK_MENU_HOT:DK_MENU_BG);
-            FillRect(dis->hDC,&dis->rcItem,hbr); DeleteObject(hbr);
+            /* Use cached brushes -- called on every menu hover/unhover. */
+            EnsureDarkGDI();
+            FillRect(dis->hDC,&dis->rcItem, hot ? g_hbrDkMenuHot : g_hbrDkMenuBg);
             SetBkMode(dis->hDC,TRANSPARENT); SetTextColor(dis->hDC,DK_TEXT);
             /* Explicitly select the same font used in WM_NCPAINT to prevent
                a font/size jump between the painted state and the hover state. */
@@ -2368,7 +2435,9 @@ static LRESULT CALLBACK MainProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
             if(!hPr){ return 0; }
             g_hwndDlg=hPr; SetTitleBarDark(hPr,g_darkMode);
             ShowWindow(hPr,SW_SHOW); UpdateWindow(hPr);
-            MSG pmsg;
+            /* Initialize to zero so pmsg.message is well-defined if GetMessage
+               never runs (e.g. returns -1 immediately due to an invalid HWND). */
+            MSG pmsg = {0};
             /* Use > 0 so WM_QUIT (return value 0) exits the loop without being swallowed. */
             while(!g_promptDone && GetMessage(&pmsg,NULL,0,0) > 0){
                 if(IsWindow(hPr)&&IsDialogMessage(hPr,&pmsg)) continue;
@@ -2525,7 +2594,7 @@ static LRESULT CALLBACK MainProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
 
         } else if(id==ID_HELP_ABOUT){
             ShowInfoDialog(hwnd,"About Simple Typer",
-                "Simple Typer\r\nVersion 2.37\r\n\r\n"
+                "Simple Typer\r\nVersion 2.38\r\n\r\n"
                 "Author:   UberGuidoZ\r\n"
                 "Contact:  https://github.com/UberGuidoZ");
 
