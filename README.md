@@ -22,6 +22,7 @@ Features:
  * Keyboard shortcuts - optional global hotkey per button
  * Multiple profiles - switchable INI sets from tray or Profiles menu
  * System key tokens - {tab} {enter} {esc} etc. send keystrokes mid-text
+ * Delay token - {delay_####} pauses output for #### milliseconds mid-sequence
  * Undo Delete - Ctrl+Z or right-click restores the last deleted button
  * Export / Import buttons to and from a portable INI snippet file
  * Drag-and-drop button reordering in the normal list view
