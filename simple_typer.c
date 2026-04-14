@@ -1,5 +1,5 @@
 /*
- * simple_typer.c - Simple Typer v2.38
+ * simple_typer.c - Simple Typer v2.39
  *
  * Each button types its stored text into whatever window had focus before the button was clicked.
  *
@@ -23,53 +23,31 @@
  *   - Keyboard shortcuts - optional global hotkey per button
  *   - Multiple profiles - switchable INI sets from tray or Profiles menu
  *   - System key tokens - {tab} {enter} {esc} etc. send keystrokes mid-text
+ *   - Delay token - {delay_####} pauses output for #### milliseconds mid-sequence
  *   - Undo Delete - Ctrl+Z or right-click restores the last deleted button
  *   - Export / Import buttons to and from a portable INI snippet file
  *   - Drag-and-drop button reordering in the normal list view
- *   - Version 2.38
  *
  * Compile:
  *   cl simple_typer.c simple_typer.res /link user32.lib shell32.lib comdlg32.lib gdi32.lib dwmapi.lib comctl32.lib /subsystem:windows /out:simple_typer.exe
  */
 
 /*
- * v2.38 -- Bug Fixes, Security, Optimizations
+ * v2.39 -- Delay Token
  *
- * Bug Fixes
- *   - Fixed MSG pmsg uninitialized in both prompt modal loops (FireButton and
- *     IDM_PROFILE_NEW). When GetMessage returned -1 (invalid HWND), the
- *     post-loop WM_QUIT check read indeterminate memory. Both declarations
- *     are now initialized to {0}.
- *   - Fixed DrawDropLine fallback Y coordinate being wrong for any dropIdx > 1.
- *     The previous fallback always resolved to the first visible button, drawing
- *     the drop indicator at the wrong position. The fallback now walks backward
- *     from the last visible button to find the correct slot boundary.
- *   - Fixed EncodeNewlines and DecodeNewlines writing dst[0] out of bounds when
- *     dstSize == 0. The signed guard (j < dstSize-2) evaluates false for zero,
- *     leaving the unconditional dst[j] = '\0' as an out-of-bounds write. Both
- *     functions now return immediately when dstSize <= 0.
- *
- * Security
- *   - Clarified icon-path UNC/device-path rejection comment. The existing check
- *     (ip[0]=='\\' && ip[1]=='\\') already blocks Win32 device paths (\\.\,
- *     \\?\) as well as UNC paths; the comment now documents both cases explicitly.
- *
- * Optimizations
- *   - RepaintMenuBar (called on every WM_NCPAINT and WM_NCACTIVATE) previously
- *     created and destroyed a DK_MENU_BG brush on each call. It now uses a new
- *     cached object g_hbrDkMenuBg managed by EnsureDarkGDI/FreeDarkGDI.
- *   - WM_DRAWITEM menu handler previously created and destroyed two brushes
- *     (DK_MENU_BG and DK_MENU_HOT) on every hover/unhover event. Both are now
- *     cached as g_hbrDkMenuBg and g_hbrDkMenuHot alongside the other dark-mode
- *     GDI objects.
- *   - DrawDropLine previously created and destroyed a pen on every WM_MOUSEMOVE
- *     during a drag (twice per event: erase + redraw). The pen is now cached as
- *     g_hpenDropLine and managed by EnsureDarkGDI/FreeDarkGDI.
- *
- * Minor
- *   - g_tooltipText storage widened from [128] to [160] to match the tipbuf
- *     build buffer, preventing silent truncation of tooltip text containing
- *     long hotkey strings or category-name prefixes.
+ * New Feature
+ *   - Added {delay_####} token for use in button text. When the action
+ *     sequencer reaches a delay token it arms a one-shot WM_TIMER for the
+ *     specified number of milliseconds (#### = 1..30000) and pauses output
+ *     until that timer fires, then continues with the next action.
+ *     Example: "Hello{delay_500}{tab}World" types "Hello", waits 500 ms,
+ *     presses Tab, then types "World".
+ *   - ACT_DELAY action type added alongside ACT_TEXT and ACT_KEY.
+ *   - TIMER_DELAY (timer ID 5) added; killed on WM_DESTROY like the others.
+ *   - g_pendingDelay global carries the requested ms value into the timer
+ *     handler.
+ *   - MAX_FIRE_ACTIONS unchanged; each {delay_####} token consumes one slot.
+ *   - Instructions and About dialogs updated to document the new token.
  */
 
 #include <windows.h>
@@ -140,6 +118,7 @@ static LRESULT CALLBACK ButtonSubclassProc(HWND hwnd, UINT msg, WPARAM wParam,
 #define TIMER_RESTORE  2   /* delay before restoring saved clipboard */
 #define TIMER_KEY      3   /* short delay before sending a system key */
 #define TIMER_KEY_GAP  4   /* brief pause between consecutive actions */
+#define TIMER_DELAY    5   /* user-requested {delay_####} pause */
 
 /* Dialog controls */
 #define IDC_NAME_EDIT         10
@@ -364,6 +343,7 @@ static const struct { const char *tok; int tokLen; int vk; } g_keyTokens[] = {
 /* ── Fire-action list (text segments + key presses) ──────────────────── */
 #define ACT_TEXT  0
 #define ACT_KEY   1
+#define ACT_DELAY 2   /* {delay_####} pause in milliseconds */
 #define MAX_FIRE_ACTIONS 64
 
 typedef struct {
@@ -381,6 +361,7 @@ static FireAction g_fireActions[MAX_FIRE_ACTIONS];
 static int        g_fireCount  = 0;
 static int        g_fireIdx    = 0;
 static int        g_pendingVk  = 0;
+static int        g_pendingDelay = 0;  /* ms for TIMER_DELAY */
 
 /* ── DWM dark title bar ──────────────────────────────────────────────── */
 static void SetTitleBarDark(HWND hwnd, int dark)
@@ -919,7 +900,44 @@ static void BuildFireActions(const char *text)
 
     while (ti < tlen) {
         if (text[ti] == '{') {
+            /* Check for {delay_####} before the key-token table */
             int matched = 0;
+            if (strncmp(&text[ti], "{delay_", 7) == 0) {
+                int numStart = ti + 7, numEnd = numStart;
+                while (numEnd < tlen && text[numEnd] >= '0' && text[numEnd] <= '9') numEnd++;
+                if (numEnd > numStart && numEnd < tlen && text[numEnd] == '}' &&
+                    g_fireCount < MAX_FIRE_ACTIONS - 1) {
+                    /* flush any buffered text first */
+                    if (bi > 0 && g_fireCount < MAX_FIRE_ACTIONS) {
+                        buf[bi] = '\0';
+                        int needed = bi + 1;
+                        g_fireActions[g_fireCount].type = ACT_TEXT;
+                        if (g_fireTextPos + needed <= FIRE_POOL_SIZE) {
+                            g_fireActions[g_fireCount].text = g_fireTextPool + g_fireTextPos;
+                            memcpy(g_fireActions[g_fireCount].text, buf, needed);
+                            g_fireTextPos += needed;
+                        } else {
+                            g_fireActions[g_fireCount].text = "";
+                        }
+                        g_fireActions[g_fireCount].vk = 0;
+                        g_fireCount++; bi = 0;
+                    }
+                    char numBuf[12]; int numLen = numEnd - numStart;
+                    if (numLen > 10) numLen = 10;
+                    memcpy(numBuf, &text[numStart], numLen); numBuf[numLen] = '\0';
+                    int ms = atoi(numBuf);
+                    if (ms < 1)     ms = 1;
+                    if (ms > 30000) ms = 30000;
+                    if (g_fireCount < MAX_FIRE_ACTIONS) {
+                        g_fireActions[g_fireCount].type = ACT_DELAY;
+                        g_fireActions[g_fireCount].text = NULL;
+                        g_fireActions[g_fireCount].vk   = ms;
+                        g_fireCount++;
+                    }
+                    ti = numEnd + 1; matched = 1;
+                }
+            }
+            if (!matched) {
             for (int k = 0; g_keyTokens[k].tok && g_fireCount < MAX_FIRE_ACTIONS - 1; k++) {
                 int tl = g_keyTokens[k].tokLen;
                 if (ti + tl > tlen) continue;
@@ -953,6 +971,7 @@ static void BuildFireActions(const char *text)
                 }
             }
             if (!matched) { if (bi < MAX_TEXT - 1) buf[bi++] = text[ti]; ti++; }
+            } /* end outer if (!matched) wrapping key-token search */
         } else {
             if (bi < MAX_TEXT - 1) buf[bi++] = text[ti];
             ti++;
@@ -991,6 +1010,9 @@ static void FireNextAction(void)
         TypeText(a->text);
         SetForegroundWindow(g_prevWindow);
         SetTimer(g_hwndMain, TIMER_PASTE, 80, NULL);
+    } else if (a->type == ACT_DELAY) {
+        g_pendingDelay = a->vk;
+        SetTimer(g_hwndMain, TIMER_DELAY, (UINT)g_pendingDelay, NULL);
     } else {
         g_pendingVk = a->vk;
         SetForegroundWindow(g_prevWindow);
@@ -2104,6 +2126,10 @@ static LRESULT CALLBACK MainProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
             /* TIMER_KEY_GAP: post-key pause -- fire the next action in the list */
             KillTimer(hwnd, TIMER_KEY_GAP);
             FireNextAction();
+        } else if (wParam == TIMER_DELAY) {
+            /* TIMER_DELAY: user-requested {delay_####} pause has elapsed */
+            KillTimer(hwnd, TIMER_DELAY);
+            FireNextAction();
         }
         return 0;
 
@@ -2522,6 +2548,7 @@ static LRESULT CALLBACK MainProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
                 "  {delete}    - Delete key\r\n"
                 "  {up} {down} {left} {right} - Arrow keys\r\n"
                 "  {home} {end} {pgup} {pgdn} - Navigation keys\r\n"
+                "  {delay_####}               - pause for #### ms (1-30000)\r\n"
                 "Example: \"Hello{tab}World{enter}\" types Hello, presses Tab,\r\n"
                 "types World, then presses Enter.\r\n"
                 "\r\n"
@@ -2594,7 +2621,7 @@ static LRESULT CALLBACK MainProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
 
         } else if(id==ID_HELP_ABOUT){
             ShowInfoDialog(hwnd,"About Simple Typer",
-                "Simple Typer\r\nVersion 2.38\r\n\r\n"
+                "Simple Typer\r\nVersion 2.39\r\n\r\n"
                 "Author:   UberGuidoZ\r\n"
                 "Contact:  https://github.com/UberGuidoZ");
 
@@ -2635,6 +2662,7 @@ static LRESULT CALLBACK MainProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
            clipboard ourselves so the user's original content is not lost. */
         KillTimer(hwnd, TIMER_PASTE); KillTimer(hwnd, TIMER_RESTORE);
         KillTimer(hwnd, TIMER_KEY);   KillTimer(hwnd, TIMER_KEY_GAP);
+        KillTimer(hwnd, TIMER_DELAY);
         if (g_hOldClip) {
             if (OpenClipboard(g_hwndMain)) {
                 EmptyClipboard();
