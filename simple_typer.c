@@ -1,5 +1,5 @@
 /*
- * simple_typer.c - Simple Typer v2.39
+ * simple_typer.c - Simple Typer v2.40
  *
  * Each button types its stored text into whatever window had focus before the button was clicked.
  *
@@ -33,21 +33,12 @@
  */
 
 /*
- * v2.39 -- Delay Token
+ * v2.40 - Documentation refresh
  *
- * New Feature
- *   - Added {delay_####} token for use in button text. When the action
- *     sequencer reaches a delay token it arms a one-shot WM_TIMER for the
- *     specified number of milliseconds (#### = 1..30000) and pauses output
- *     until that timer fires, then continues with the next action.
- *     Example: "Hello{delay_500}{tab}World" types "Hello", waits 500 ms,
- *     presses Tab, then types "World".
- *   - ACT_DELAY action type added alongside ACT_TEXT and ACT_KEY.
- *   - TIMER_DELAY (timer ID 5) added; killed on WM_DESTROY like the others.
- *   - g_pendingDelay global carries the requested ms value into the timer
- *     handler.
- *   - MAX_FIRE_ACTIONS unchanged; each {delay_####} token consumes one slot.
- *   - Instructions and About dialogs updated to document the new token.
+ * Minor Update
+ *   - Minor documentation update (instructions and hints).
+ *   - Fixed C4133 compile warning: GetDateFormatEx (Unicode-only) now writes
+ *     into a WCHAR buffer; WideCharToMultiByte converts the result to char.
  */
 
 #include <windows.h>
@@ -851,8 +842,11 @@ static void ExpandVariables(const char *in, char *out, int outSize, const char *
 
     /* {date}: short date formatted to the user's regional settings */
     char dateBuf[64];
-    if (!GetDateFormatEx(LOCALE_NAME_USER_DEFAULT, DATE_SHORTDATE, &st,
-                         NULL, dateBuf, (int)sizeof(dateBuf), NULL))
+    WCHAR wDateBuf[64];
+    if (GetDateFormatEx(LOCALE_NAME_USER_DEFAULT, DATE_SHORTDATE, &st,
+                        NULL, wDateBuf, (int)(sizeof(wDateBuf) / sizeof(WCHAR)), NULL))
+        WideCharToMultiByte(CP_ACP, 0, wDateBuf, -1, dateBuf, (int)sizeof(dateBuf), NULL, NULL);
+    else
         snprintf(dateBuf, sizeof(dateBuf), "%02d/%02d/%04d", st.wMonth, st.wDay, st.wYear);
 
     /* {isodate}: ISO 8601 date (YYYY-MM-DD), locale-independent */
@@ -1712,11 +1706,11 @@ static LRESULT CALLBACK AddDlgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lP
         CreateWindow("EDIT",edit?bc->name:"",WS_VISIBLE|WS_CHILD|WS_BORDER|WS_TABSTOP|ES_AUTOHSCROLL,
                      10,30,390,22,hwnd,(HMENU)IDC_NAME_EDIT,g_hInst,NULL);
         /* ── Text ── */
-        CreateWindow("STATIC","Text to type:  (use {date} {isodate} {time} {clipboard} {?})",WS_VISIBLE|WS_CHILD,
+        CreateWindow("STATIC","Variables to type: {date} {isodate} {time} {clipboard} {?}",WS_VISIBLE|WS_CHILD,
                      10,62,390,16,hwnd,NULL,g_hInst,NULL);
-        CreateWindow("STATIC","Keys: {tab} {enter} {esc} {backspace} {del}",WS_VISIBLE|WS_CHILD,
+        CreateWindow("STATIC","Keys: {tab} {enter} {esc} {backspace} {del} {up} {down}",WS_VISIBLE|WS_CHILD,
                      10,78,390,16,hwnd,NULL,g_hInst,NULL);
-        CreateWindow("STATIC","{up} {down} {left} {right} {home} {end} {pgup} {pgdn}",WS_VISIBLE|WS_CHILD,
+        CreateWindow("STATIC","{left} {right} {home} {end} {pgup} {pgdn} {delay_####}",WS_VISIBLE|WS_CHILD,
                      10,94,390,16,hwnd,NULL,g_hInst,NULL);
         CreateWindow("EDIT",edit?bc->text:"",WS_VISIBLE|WS_CHILD|WS_BORDER|WS_TABSTOP|WS_VSCROLL|
                      ES_MULTILINE|ES_AUTOVSCROLL|ES_WANTRETURN,
@@ -2548,7 +2542,8 @@ static LRESULT CALLBACK MainProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
                 "  {delete}    - Delete key\r\n"
                 "  {up} {down} {left} {right} - Arrow keys\r\n"
                 "  {home} {end} {pgup} {pgdn} - Navigation keys\r\n"
-                "  {delay_####}               - pause for #### ms (1-30000)\r\n"
+                "  {delay_####} - pause for #### ms (1-30000)\r\n"
+				"\r\n"
                 "Example: \"Hello{tab}World{enter}\" types Hello, presses Tab,\r\n"
                 "types World, then presses Enter.\r\n"
                 "\r\n"
@@ -2621,7 +2616,7 @@ static LRESULT CALLBACK MainProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
 
         } else if(id==ID_HELP_ABOUT){
             ShowInfoDialog(hwnd,"About Simple Typer",
-                "Simple Typer\r\nVersion 2.39\r\n\r\n"
+                "Simple Typer\r\nVersion 2.40\r\n\r\n"
                 "Author:   UberGuidoZ\r\n"
                 "Contact:  https://github.com/UberGuidoZ");
 
