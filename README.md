@@ -2,7 +2,7 @@
 Simple Typer shows a list of customizable buttons with optional organization.<br>
 Click a button to type the stored keystrokes into whatever window previously had focus.
 
- * Features:
+Features:
  * INI-configured buttons; each button types text into the last focused window
  * Optional per-button custom border color (via color picker)
  * Dark mode, configurable font size and window width
