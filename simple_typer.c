@@ -1,5 +1,5 @@
 /*
- * simple_typer.c - Simple Typer v2.40
+ * simple_typer.c - Simple Typer v2.50
  *
  * Each button types its stored text into whatever window had focus before the button was clicked.
  *
@@ -22,7 +22,8 @@
  *   - Categories - collapsible group headers to organise buttons
  *   - Keyboard shortcuts - optional global hotkey per button
  *   - Multiple profiles - switchable INI sets from tray or Profiles menu
- *   - System key tokens - {tab} {enter} {esc} etc. send keystrokes mid-text
+ *   - System key tokens - {tab} {enter} {esc} {win} {f1}-{f12} etc. send keystrokes mid-text
+ *   - Chord tokens - {win+r} {ctrl+shift+esc} {alt+f4} etc. send key combos mid-text
  *   - Delay token - {delay_####} pauses output for #### milliseconds mid-sequence
  *   - Undo Delete - Ctrl+Z or right-click restores the last deleted button
  *   - Export / Import buttons to and from a portable INI snippet file
@@ -30,6 +31,29 @@
  *
  * Compile:
  *   cl simple_typer.c simple_typer.res /link user32.lib shell32.lib comdlg32.lib gdi32.lib dwmapi.lib comctl32.lib /subsystem:windows /out:simple_typer.exe
+ */
+
+/*
+ * v2.50 -- Extended Key Tokens & Chord Support
+ *
+ * New Features
+ *   - Expanded system-key token table: {win}, {rwin}, {f1}-{f12}, {space},
+ *     {insert}/{ins}, {printscreen}/{prtscr}, {pause}, {capslock},
+ *     {numlock}, {scrolllock}, {apps}, {ctrl}, {alt}, {shift} and their
+ *     left/right variants ({lctrl},{rctrl},{lalt},{ralt},{lshift},{rshift}).
+ *   - Chord (multi-key combo) support via {mod+key} syntax.
+ *     Any combination of win/ctrl/alt/shift + a key is valid.
+ *     Examples: {win+r}, {ctrl+c}, {alt+f4}, {ctrl+shift+esc},
+ *               {win+d}, {ctrl+shift+n}, {ctrl+alt+del}.
+ *   - KEYEVENTF_EXTENDEDKEY now correctly applied for Win key, nav keys,
+ *     and arrow keys (was previously omitted, causing unreliable Win key).
+ *   - KeyNeedsExtended() helper centralises extended-key logic.
+ *   - ParseChordToken() parses {mod+...+key} tokens; g_chordKeys[] maps
+ *     bare key names to VK codes for use inside chords.
+ *   - ACT_CHORD action type added (modifier flags packed into high 16 bits
+ *     of vk; main VK code in low 16 bits). TIMER_KEY handler updated to
+ *     build the full press-modifiers / press-key / release-all INPUT array.
+ *   - Instructions dialog and version string updated.
  */
 
 /*
@@ -312,6 +336,7 @@ static const char  *g_infoDlgContent = NULL;
 /* ── System-key token table ──────────────────────────────────────────── */
 /* Tokens the user can embed in button text to send a keystroke.          */
 static const struct { const char *tok; int tokLen; int vk; } g_keyTokens[] = {
+    /* Navigation / editing */
     {"{tab}",        (int)(sizeof("{tab}")       -1), VK_TAB},
     {"{enter}",      (int)(sizeof("{enter}")     -1), VK_RETURN},
     {"{return}",     (int)(sizeof("{return}")    -1), VK_RETURN},
@@ -320,14 +345,53 @@ static const struct { const char *tok; int tokLen; int vk; } g_keyTokens[] = {
     {"{backspace}",  (int)(sizeof("{backspace}") -1), VK_BACK},
     {"{delete}",     (int)(sizeof("{delete}")    -1), VK_DELETE},
     {"{del}",        (int)(sizeof("{del}")       -1), VK_DELETE},
+    {"{insert}",     (int)(sizeof("{insert}")    -1), VK_INSERT},
+    {"{ins}",        (int)(sizeof("{ins}")       -1), VK_INSERT},
+    {"{space}",      (int)(sizeof("{space}")     -1), VK_SPACE},
+    /* Arrow keys */
     {"{up}",         (int)(sizeof("{up}")        -1), VK_UP},
     {"{down}",       (int)(sizeof("{down}")      -1), VK_DOWN},
     {"{left}",       (int)(sizeof("{left}")      -1), VK_LEFT},
     {"{right}",      (int)(sizeof("{right}")     -1), VK_RIGHT},
+    /* Navigation cluster */
     {"{home}",       (int)(sizeof("{home}")      -1), VK_HOME},
     {"{end}",        (int)(sizeof("{end}")       -1), VK_END},
     {"{pgup}",       (int)(sizeof("{pgup}")      -1), VK_PRIOR},
     {"{pgdn}",       (int)(sizeof("{pgdn}")      -1), VK_NEXT},
+    /* Function keys */
+    {"{f1}",         (int)(sizeof("{f1}")        -1), VK_F1},
+    {"{f2}",         (int)(sizeof("{f2}")        -1), VK_F2},
+    {"{f3}",         (int)(sizeof("{f3}")        -1), VK_F3},
+    {"{f4}",         (int)(sizeof("{f4}")        -1), VK_F4},
+    {"{f5}",         (int)(sizeof("{f5}")        -1), VK_F5},
+    {"{f6}",         (int)(sizeof("{f6}")        -1), VK_F6},
+    {"{f7}",         (int)(sizeof("{f7}")        -1), VK_F7},
+    {"{f8}",         (int)(sizeof("{f8}")        -1), VK_F8},
+    {"{f9}",         (int)(sizeof("{f9}")        -1), VK_F9},
+    {"{f10}",        (int)(sizeof("{f10}")       -1), VK_F10},
+    {"{f11}",        (int)(sizeof("{f11}")       -1), VK_F11},
+    {"{f12}",        (int)(sizeof("{f12}")       -1), VK_F12},
+    /* Windows / system keys */
+    {"{win}",        (int)(sizeof("{win}")       -1), VK_LWIN},
+    {"{lwin}",       (int)(sizeof("{lwin}")      -1), VK_LWIN},
+    {"{rwin}",       (int)(sizeof("{rwin}")      -1), VK_RWIN},
+    {"{apps}",       (int)(sizeof("{apps}")      -1), VK_APPS},
+    {"{printscreen}",(int)(sizeof("{printscreen}")-1),VK_SNAPSHOT},
+    {"{prtscr}",     (int)(sizeof("{prtscr}")    -1), VK_SNAPSHOT},
+    {"{pause}",      (int)(sizeof("{pause}")     -1), VK_PAUSE},
+    {"{capslock}",   (int)(sizeof("{capslock}")  -1), VK_CAPITAL},
+    {"{numlock}",    (int)(sizeof("{numlock}")   -1), VK_NUMLOCK},
+    {"{scrolllock}", (int)(sizeof("{scrolllock}")-1), VK_SCROLL},
+    /* Standalone modifier keys (for single-press use; use {mod+key} for combos) */
+    {"{ctrl}",       (int)(sizeof("{ctrl}")      -1), VK_CONTROL},
+    {"{lctrl}",      (int)(sizeof("{lctrl}")     -1), VK_LCONTROL},
+    {"{rctrl}",      (int)(sizeof("{rctrl}")     -1), VK_RCONTROL},
+    {"{alt}",        (int)(sizeof("{alt}")       -1), VK_MENU},
+    {"{lalt}",       (int)(sizeof("{lalt}")      -1), VK_LMENU},
+    {"{ralt}",       (int)(sizeof("{ralt}")      -1), VK_RMENU},
+    {"{shift}",      (int)(sizeof("{shift}")     -1), VK_SHIFT},
+    {"{lshift}",     (int)(sizeof("{lshift}")    -1), VK_LSHIFT},
+    {"{rshift}",     (int)(sizeof("{rshift}")    -1), VK_RSHIFT},
     {NULL, 0, 0}
 };
 
@@ -335,6 +399,13 @@ static const struct { const char *tok; int tokLen; int vk; } g_keyTokens[] = {
 #define ACT_TEXT  0
 #define ACT_KEY   1
 #define ACT_DELAY 2   /* {delay_####} pause in milliseconds */
+#define ACT_CHORD 3   /* {mod+key} combo: high 16 bits = modifier flags, low 16 = main VK */
+
+/* Modifier-flag bits packed into the high 16 bits of FireAction.vk for ACT_CHORD */
+#define CHORD_WIN   0x00010000
+#define CHORD_CTRL  0x00020000
+#define CHORD_ALT   0x00040000
+#define CHORD_SHIFT 0x00080000
 #define MAX_FIRE_ACTIONS 64
 
 typedef struct {
@@ -881,6 +952,103 @@ static void ExpandVariables(const char *in, char *out, int outSize, const char *
     out[j] = '\0';
 }
 
+/* ── Chord / combo key support ───────────────────────────────────────── */
+/* Bare key-name lookup used inside {mod+key} chord tokens.              */
+static const struct { const char *name; int vk; } g_chordKeys[] = {
+    /* Editing */
+    {"tab",         VK_TAB},    {"enter",       VK_RETURN},
+    {"return",      VK_RETURN}, {"esc",         VK_ESCAPE},
+    {"escape",      VK_ESCAPE}, {"backspace",   VK_BACK},
+    {"delete",      VK_DELETE}, {"del",         VK_DELETE},
+    {"insert",      VK_INSERT}, {"ins",         VK_INSERT},
+    {"space",       VK_SPACE},
+    /* Navigation */
+    {"up",          VK_UP},     {"down",        VK_DOWN},
+    {"left",        VK_LEFT},   {"right",       VK_RIGHT},
+    {"home",        VK_HOME},   {"end",         VK_END},
+    {"pgup",        VK_PRIOR},  {"pgdn",        VK_NEXT},
+    /* Function keys */
+    {"f1",VK_F1},{"f2",VK_F2},{"f3",VK_F3},{"f4",VK_F4},
+    {"f5",VK_F5},{"f6",VK_F6},{"f7",VK_F7},{"f8",VK_F8},
+    {"f9",VK_F9},{"f10",VK_F10},{"f11",VK_F11},{"f12",VK_F12},
+    /* System */
+    {"apps",        VK_APPS},   {"printscreen", VK_SNAPSHOT},
+    {"prtscr",      VK_SNAPSHOT},{"pause",      VK_PAUSE},
+    {"capslock",    VK_CAPITAL},{"numlock",     VK_NUMLOCK},
+    {"scrolllock",  VK_SCROLL},
+    {NULL, 0}
+};
+
+/* Returns KEYEVENTF_EXTENDEDKEY for keys that require it, else 0. */
+static DWORD KeyNeedsExtended(int vk)
+{
+    switch (vk) {
+        case VK_LWIN: case VK_RWIN:
+        case VK_INSERT: case VK_DELETE:
+        case VK_HOME:   case VK_END:
+        case VK_PRIOR:  case VK_NEXT:
+        case VK_UP:     case VK_DOWN:
+        case VK_LEFT:   case VK_RIGHT:
+        case VK_NUMLOCK: case VK_DIVIDE:
+        case VK_RCONTROL: case VK_RMENU:
+        case VK_SNAPSHOT: /* Print Screen */
+            return KEYEVENTF_EXTENDEDKEY;
+        default: return 0;
+    }
+}
+
+/* Parse a chord token (inner text between braces, already lower-cased by  */
+/* caller). Returns a packed int: high 16 bits = CHORD_* flags, low 16 =   */
+/* main VK code.  Returns 0 if the token is not a valid chord (no '+').    */
+static int ParseChordToken(const char *inner, int ilen)
+{
+    /* Must contain at least one '+' to be a chord */
+    int hasPlus = 0;
+    for (int i = 0; i < ilen; i++) if (inner[i] == '+') { hasPlus = 1; break; }
+    if (!hasPlus) return 0;
+
+    int modFlags = 0, mainVk = 0;
+    char part[32]; int pi = 0;
+
+    for (int i = 0; i <= ilen; i++) {
+        char c = (i < ilen) ? inner[i] : '\0';
+        if (c == '+' || c == '\0') {
+            part[pi] = '\0';
+            if (pi > 0) {
+                /* Modifier names */
+                if (!strcmp(part,"win")   || !strcmp(part,"lwin"))  modFlags |= CHORD_WIN;
+                else if (!strcmp(part,"rwin"))                        modFlags |= CHORD_WIN;
+                else if (!strcmp(part,"ctrl")  || !strcmp(part,"control") ||
+                         !strcmp(part,"lctrl"))                       modFlags |= CHORD_CTRL;
+                else if (!strcmp(part,"rctrl"))                       modFlags |= CHORD_CTRL;
+                else if (!strcmp(part,"alt")   || !strcmp(part,"lalt")) modFlags |= CHORD_ALT;
+                else if (!strcmp(part,"ralt"))                        modFlags |= CHORD_ALT;
+                else if (!strcmp(part,"shift") || !strcmp(part,"lshift")) modFlags |= CHORD_SHIFT;
+                else if (!strcmp(part,"rshift"))                      modFlags |= CHORD_SHIFT;
+                else {
+                    /* Named key from g_chordKeys */
+                    int vk = 0;
+                    for (int k = 0; g_chordKeys[k].name && !vk; k++)
+                        if (!strcmp(part, g_chordKeys[k].name)) vk = g_chordKeys[k].vk;
+                    /* Single letter a-z or digit 0-9 */
+                    if (!vk && pi == 1) {
+                        if (part[0] >= 'a' && part[0] <= 'z') vk = part[0] - 'a' + 'A';
+                        else if (part[0] >= '0' && part[0] <= '9') vk = part[0];
+                    }
+                    if (vk) mainVk = vk; /* last non-modifier part wins */
+                }
+            }
+            pi = 0;
+        } else {
+            if (pi < 31) part[pi++] = c;
+        }
+    }
+
+    /* A chord needs at least one modifier AND a main key */
+    if (!modFlags || !mainVk) return 0;
+    return modFlags | (mainVk & 0xFFFF);
+}
+
 /* ── Action list builder ─────────────────────────────────────────────── */
 /* Splits text into ACT_TEXT / ACT_KEY segments for sequential dispatch.  */
 static void BuildFireActions(const char *text)
@@ -930,6 +1098,42 @@ static void BuildFireActions(const char *text)
                     }
                     ti = numEnd + 1; matched = 1;
                 }
+            }
+            if (!matched) {
+            /* Check for {mod+key} chord token */
+            int closeB = -1;
+            for (int ci = ti + 1; ci < tlen && text[ci] != '{'; ci++)
+                if (text[ci] == '}') { closeB = ci; break; }
+            if (closeB > ti + 2) {
+                /* Lower-case the inner text and try ParseChordToken */
+                int innerLen = closeB - ti - 1;
+                char innerBuf[64]; int valid = innerLen < 63;
+                if (valid) {
+                    for (int ci = 0; ci < innerLen; ci++)
+                        innerBuf[ci] = (char)tolower((unsigned char)text[ti + 1 + ci]);
+                    innerBuf[innerLen] = '\0';
+                }
+                int chord = valid ? ParseChordToken(innerBuf, innerLen) : 0;
+                if (chord && g_fireCount < MAX_FIRE_ACTIONS - 1) {
+                    /* Flush buffered text first */
+                    if (bi > 0 && g_fireCount < MAX_FIRE_ACTIONS) {
+                        buf[bi] = '\0'; int needed = bi + 1;
+                        g_fireActions[g_fireCount].type = ACT_TEXT;
+                        if (g_fireTextPos + needed <= FIRE_POOL_SIZE) {
+                            g_fireActions[g_fireCount].text = g_fireTextPool + g_fireTextPos;
+                            memcpy(g_fireActions[g_fireCount].text, buf, needed);
+                            g_fireTextPos += needed;
+                        } else { g_fireActions[g_fireCount].text = ""; }
+                        g_fireActions[g_fireCount].vk = 0;
+                        g_fireCount++; bi = 0;
+                    }
+                    g_fireActions[g_fireCount].type = ACT_CHORD;
+                    g_fireActions[g_fireCount].text = NULL;
+                    g_fireActions[g_fireCount].vk   = chord;
+                    g_fireCount++;
+                    ti = closeB + 1; matched = 1;
+                }
+            }
             }
             if (!matched) {
             for (int k = 0; g_keyTokens[k].tok && g_fireCount < MAX_FIRE_ACTIONS - 1; k++) {
@@ -1008,6 +1212,7 @@ static void FireNextAction(void)
         g_pendingDelay = a->vk;
         SetTimer(g_hwndMain, TIMER_DELAY, (UINT)g_pendingDelay, NULL);
     } else {
+        /* ACT_KEY (plain key) or ACT_CHORD (modifier combo) */
         g_pendingVk = a->vk;
         SetForegroundWindow(g_prevWindow);
         SetTimer(g_hwndMain, TIMER_KEY, 50, NULL);
@@ -2105,14 +2310,39 @@ static LRESULT CALLBACK MainProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
             }
             FireNextAction();
         } else if (wParam == TIMER_KEY) {
-            /* TIMER_KEY: send a system key (e.g. Tab, Enter, Esc) via SendInput */
+            /* TIMER_KEY: send a key or chord (mod+key combo) via SendInput.      */
+            /* g_pendingVk: high 16 bits = CHORD_* modifier flags (ACT_CHORD),   */
+            /*              low  16 bits = main VK code.                          */
             KillTimer(hwnd, TIMER_KEY);
             if (g_pendingVk) {
-                INPUT ki[2] = {0};
-                ki[0].type = INPUT_KEYBOARD; ki[0].ki.wVk = (WORD)g_pendingVk;
-                ki[1].type = INPUT_KEYBOARD; ki[1].ki.wVk = (WORD)g_pendingVk;
-                ki[1].ki.dwFlags = KEYEVENTF_KEYUP;
-                SendInput(2, ki, sizeof(INPUT));
+                int modFlags = (g_pendingVk >> 16) & 0xFF;
+                int mainVk   =  g_pendingVk & 0xFFFF;
+                INPUT inputs[12]; int n = 0;
+                memset(inputs, 0, sizeof(inputs));
+#define KI_DOWN(vk_, ext_) do { inputs[n].type=INPUT_KEYBOARD; inputs[n].ki.wVk=(WORD)(vk_); inputs[n].ki.dwFlags=(ext_); n++; } while(0)
+#define KI_UP(vk_, ext_)   do { inputs[n].type=INPUT_KEYBOARD; inputs[n].ki.wVk=(WORD)(vk_); inputs[n].ki.dwFlags=(ext_)|KEYEVENTF_KEYUP; n++; } while(0)
+                if (modFlags) {
+                    /* Chord: press modifiers down, press+release main key, lift modifiers */
+                    if (modFlags & (CHORD_WIN  >>16)) KI_DOWN(VK_LWIN,   KEYEVENTF_EXTENDEDKEY);
+                    if (modFlags & (CHORD_CTRL >>16)) KI_DOWN(VK_CONTROL, 0);
+                    if (modFlags & (CHORD_ALT  >>16)) KI_DOWN(VK_MENU,    0);
+                    if (modFlags & (CHORD_SHIFT>>16)) KI_DOWN(VK_SHIFT,   0);
+                    DWORD ext = KeyNeedsExtended(mainVk);
+                    KI_DOWN(mainVk, ext);
+                    KI_UP  (mainVk, ext);
+                    if (modFlags & (CHORD_SHIFT>>16)) KI_UP(VK_SHIFT,   0);
+                    if (modFlags & (CHORD_ALT  >>16)) KI_UP(VK_MENU,    0);
+                    if (modFlags & (CHORD_CTRL >>16)) KI_UP(VK_CONTROL, 0);
+                    if (modFlags & (CHORD_WIN  >>16)) KI_UP(VK_LWIN,    KEYEVENTF_EXTENDEDKEY);
+                } else {
+                    /* Single key: press + release, with extended flag if needed */
+                    DWORD ext = KeyNeedsExtended(mainVk);
+                    KI_DOWN(mainVk, ext);
+                    KI_UP  (mainVk, ext);
+                }
+#undef KI_DOWN
+#undef KI_UP
+                SendInput(n, inputs, sizeof(INPUT));
                 g_pendingVk = 0;
             }
             SetTimer(hwnd, TIMER_KEY_GAP, 50, NULL); /* brief pause before next action */
@@ -2535,14 +2765,39 @@ static LRESULT CALLBACK MainProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
                 "\r\n"
                 "SYSTEM KEYS\r\n"
                 "Embed these tokens to send a keystroke at that point in the text:\r\n"
-                "  {tab}       - Tab key\r\n"
-                "  {enter}     - Enter / Return key\r\n"
-                "  {esc}       - Escape key\r\n"
-                "  {backspace} - Backspace key\r\n"
-                "  {delete}    - Delete key\r\n"
+                "  {tab}         - Tab key\r\n"
+                "  {enter}       - Enter / Return key\r\n"
+                "  {esc}         - Escape key\r\n"
+                "  {backspace}   - Backspace key\r\n"
+                "  {delete}/{del} - Delete key\r\n"
+                "  {insert}/{ins} - Insert key\r\n"
+                "  {space}       - Space bar\r\n"
                 "  {up} {down} {left} {right} - Arrow keys\r\n"
                 "  {home} {end} {pgup} {pgdn} - Navigation keys\r\n"
-                "  {delay_####} - pause for #### ms (1-30000)\r\n"
+                "  {f1} - {f12}  - Function keys\r\n"
+                "  {win}/{lwin}/{rwin} - Windows key\r\n"
+                "  {apps}        - Application / Context Menu key\r\n"
+                "  {printscreen}/{prtscr} - Print Screen\r\n"
+                "  {pause}       - Pause / Break key\r\n"
+                "  {capslock}    - Caps Lock\r\n"
+                "  {numlock}     - Num Lock\r\n"
+                "  {scrolllock}  - Scroll Lock\r\n"
+                "  {ctrl}/{lctrl}/{rctrl} - Ctrl key (standalone press)\r\n"
+                "  {alt}/{lalt}/{ralt}    - Alt key (standalone press)\r\n"
+                "  {shift}/{lshift}/{rshift} - Shift key (standalone press)\r\n"
+                "  {delay_####}  - pause for #### ms (1-30000)\r\n"
+                "\r\n"
+                "KEY COMBOS (CHORDS)\r\n"
+                "Use {modifier+key} to send a key combination:\r\n"
+                "  Modifiers: win, ctrl, alt, shift (mix freely)\r\n"
+                "  Key: any letter, digit, or named key above\r\n"
+                "  {win+r}            - Open Run dialog\r\n"
+                "  {win+d}            - Show desktop\r\n"
+                "  {ctrl+c}           - Copy\r\n"
+                "  {ctrl+shift+esc}   - Task Manager\r\n"
+                "  {alt+f4}           - Close window\r\n"
+                "  {ctrl+alt+del}     - Security screen\r\n"
+                "  {ctrl+shift+n}     - New folder (Explorer)\r\n"
 				"\r\n"
                 "Example: \"Hello{tab}World{enter}\" types Hello, presses Tab,\r\n"
                 "types World, then presses Enter.\r\n"
@@ -2616,7 +2871,7 @@ static LRESULT CALLBACK MainProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
 
         } else if(id==ID_HELP_ABOUT){
             ShowInfoDialog(hwnd,"About Simple Typer",
-                "Simple Typer\r\nVersion 2.40\r\n\r\n"
+                "Simple Typer\r\nVersion 2.50\r\n\r\n"
                 "Author:   UberGuidoZ\r\n"
                 "Contact:  https://github.com/UberGuidoZ");
 
