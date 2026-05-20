@@ -1,5 +1,5 @@
 /*
- * simple_typer.c - Simple Typer v2.55
+ * simple_typer.c - Simple Typer v2.56
  *
  * Each button types its stored text into whatever window had focus before the button was clicked.
  *
@@ -34,7 +34,7 @@
  */
 
 /*
- * v2.55 -- Extended Key Tokens & Chord Support
+ * v2.56 -- Extended Key Tokens & Chord Support
  *
  * New Features
  *   - Expanded system-key token table: {win}, {rwin}, {f1}-{f12}, {space},
@@ -1982,13 +1982,13 @@ static HMENU BuildTokenMenu(void)
     HMENU hChord = CreatePopupMenu();
 
     /* ── Editing ── */
-    AppendMenu(hEdit, MF_STRING, TOKID_TAB,       "{tab}           - Tab");
-    AppendMenu(hEdit, MF_STRING, TOKID_ENTER,     "{enter}         - Enter / Return");
-    AppendMenu(hEdit, MF_STRING, TOKID_ESC,       "{esc}           - Escape");
-    AppendMenu(hEdit, MF_STRING, TOKID_BACKSPACE, "{backspace}     - Backspace");
-    AppendMenu(hEdit, MF_STRING, TOKID_DELETE,    "{delete}        - Delete");
-    AppendMenu(hEdit, MF_STRING, TOKID_INSERT,    "{insert}        - Insert");
-    AppendMenu(hEdit, MF_STRING, TOKID_SPACE,     "{space}         - Space bar");
+    AppendMenu(hEdit, MF_STRING, TOKID_TAB,       "{tab}\tTab");
+    AppendMenu(hEdit, MF_STRING, TOKID_ENTER,     "{enter}\tEnter / Return");
+    AppendMenu(hEdit, MF_STRING, TOKID_ESC,       "{esc}\tEscape");
+    AppendMenu(hEdit, MF_STRING, TOKID_BACKSPACE, "{backspace}\tBackspace");
+    AppendMenu(hEdit, MF_STRING, TOKID_DELETE,    "{delete}\tDelete");
+    AppendMenu(hEdit, MF_STRING, TOKID_INSERT,    "{insert}\tInsert");
+    AppendMenu(hEdit, MF_STRING, TOKID_SPACE,     "{space}\tSpace bar");
     AppendMenu(hMenu, MF_POPUP, (UINT_PTR)hEdit,  "Editing Keys");
 
     /* ── Arrows ── */
@@ -2001,8 +2001,8 @@ static HMENU BuildTokenMenu(void)
     /* ── Navigation cluster ── */
     AppendMenu(hNav, MF_STRING, TOKID_HOME, "{home}");
     AppendMenu(hNav, MF_STRING, TOKID_END,  "{end}");
-    AppendMenu(hNav, MF_STRING, TOKID_PGUP, "{pgup}");
-    AppendMenu(hNav, MF_STRING, TOKID_PGDN, "{pgdn}");
+    AppendMenu(hNav, MF_STRING, TOKID_PGUP, "{pgup}\tPage Up");
+    AppendMenu(hNav, MF_STRING, TOKID_PGDN, "{pgdn}\tPage Down");
     AppendMenu(hMenu, MF_POPUP, (UINT_PTR)hNav, "Navigation");
 
     /* ── Function keys ── */
@@ -2013,44 +2013,44 @@ static HMENU BuildTokenMenu(void)
     AppendMenu(hMenu, MF_POPUP, (UINT_PTR)hFn, "Function Keys  {f1}-{f12}");
 
     /* ── Windows & System ── */
-    AppendMenu(hSys, MF_STRING, TOKID_WIN,         "{win}           - Windows key");
-    AppendMenu(hSys, MF_STRING, TOKID_APPS,        "{apps}          - Context Menu key");
-    AppendMenu(hSys, MF_STRING, TOKID_PRINTSCREEN, "{printscreen}   - Print Screen");
-    AppendMenu(hSys, MF_STRING, TOKID_PAUSE,       "{pause}         - Pause / Break");
-    AppendMenu(hSys, MF_STRING, TOKID_CAPSLOCK,    "{capslock}      - Caps Lock");
-    AppendMenu(hSys, MF_STRING, TOKID_NUMLOCK,     "{numlock}       - Num Lock");
-    AppendMenu(hSys, MF_STRING, TOKID_SCROLLLOCK,  "{scrolllock}    - Scroll Lock");
+    AppendMenu(hSys, MF_STRING, TOKID_WIN,         "{win}\tWindows key");
+    AppendMenu(hSys, MF_STRING, TOKID_APPS,        "{apps}\tContext Menu key");
+    AppendMenu(hSys, MF_STRING, TOKID_PRINTSCREEN, "{printscreen}\tPrint Screen");
+    AppendMenu(hSys, MF_STRING, TOKID_PAUSE,       "{pause}\tPause / Break");
+    AppendMenu(hSys, MF_STRING, TOKID_CAPSLOCK,    "{capslock}\tCaps Lock");
+    AppendMenu(hSys, MF_STRING, TOKID_NUMLOCK,     "{numlock}\tNum Lock");
+    AppendMenu(hSys, MF_STRING, TOKID_SCROLLLOCK,  "{scrolllock}\tScroll Lock");
     AppendMenu(hMenu, MF_POPUP, (UINT_PTR)hSys, "Windows && System");
 
     /* ── Modifier keys (standalone press) ── */
-    AppendMenu(hMod, MF_STRING, TOKID_CTRL,  "{ctrl}   - Ctrl (standalone press)");
-    AppendMenu(hMod, MF_STRING, TOKID_ALT,   "{alt}    - Alt (standalone press)");
-    AppendMenu(hMod, MF_STRING, TOKID_SHIFT, "{shift}  - Shift (standalone press)");
+    AppendMenu(hMod, MF_STRING, TOKID_CTRL,  "{ctrl}\tCtrl (standalone press)");
+    AppendMenu(hMod, MF_STRING, TOKID_ALT,   "{alt}\tAlt (standalone press)");
+    AppendMenu(hMod, MF_STRING, TOKID_SHIFT, "{shift}\tShift (standalone press)");
     AppendMenu(hMenu, MF_POPUP, (UINT_PTR)hMod, "Modifier Keys");
 
     AppendMenu(hMenu, MF_SEPARATOR, 0, NULL);
 
     /* ── Delay ── */
     AppendMenu(hMenu, MF_STRING, TOKID_DELAY,
-               "{delay_500}   - Pause 500 ms  (edit number after inserting)");
+               "{delay_500}\tPause 500 ms  (edit number after inserting)");
 
     AppendMenu(hMenu, MF_SEPARATOR, 0, NULL);
 
     /* ── Key combos ── */
-    AppendMenu(hChord, MF_STRING, TOKID_CHORD_WINR,  "{win+r}           - Open Run dialog");
-    AppendMenu(hChord, MF_STRING, TOKID_CHORD_WIND,  "{win+d}           - Show desktop");
-    AppendMenu(hChord, MF_STRING, TOKID_CHORD_WINL,  "{win+l}           - Lock screen");
-    AppendMenu(hChord, MF_STRING, TOKID_CHORD_WINTAB,"{win+tab}         - Task View");
+    AppendMenu(hChord, MF_STRING, TOKID_CHORD_WINR,  "{win+r}\tOpen Run dialog");
+    AppendMenu(hChord, MF_STRING, TOKID_CHORD_WIND,  "{win+d}\tShow desktop");
+    AppendMenu(hChord, MF_STRING, TOKID_CHORD_WINL,  "{win+l}\tLock screen");
+    AppendMenu(hChord, MF_STRING, TOKID_CHORD_WINTAB,"{win+tab}\tTask View");
     AppendMenu(hChord, MF_SEPARATOR, 0, NULL);
-    AppendMenu(hChord, MF_STRING, TOKID_CHORD_CTRLC, "{ctrl+c}          - Copy");
-    AppendMenu(hChord, MF_STRING, TOKID_CHORD_CTRLV, "{ctrl+v}          - Paste");
-    AppendMenu(hChord, MF_STRING, TOKID_CHORD_CTRLZ, "{ctrl+z}          - Undo");
-    AppendMenu(hChord, MF_STRING, TOKID_CHORD_CTRLY, "{ctrl+y}          - Redo");
-    AppendMenu(hChord, MF_STRING, TOKID_CHORD_CTRLA, "{ctrl+a}          - Select All");
+    AppendMenu(hChord, MF_STRING, TOKID_CHORD_CTRLC, "{ctrl+c}\tCopy");
+    AppendMenu(hChord, MF_STRING, TOKID_CHORD_CTRLV, "{ctrl+v}\tPaste");
+    AppendMenu(hChord, MF_STRING, TOKID_CHORD_CTRLZ, "{ctrl+z}\tUndo");
+    AppendMenu(hChord, MF_STRING, TOKID_CHORD_CTRLY, "{ctrl+y}\tRedo");
+    AppendMenu(hChord, MF_STRING, TOKID_CHORD_CTRLA, "{ctrl+a}\tSelect All");
     AppendMenu(hChord, MF_SEPARATOR, 0, NULL);
-    AppendMenu(hChord, MF_STRING, TOKID_CHORD_CSESC, "{ctrl+shift+esc}  - Task Manager");
-    AppendMenu(hChord, MF_STRING, TOKID_CHORD_ALTF4, "{alt+f4}          - Close window");
-    AppendMenu(hChord, MF_STRING, TOKID_CHORD_CAD,   "{ctrl+alt+del}    - Security screen");
+    AppendMenu(hChord, MF_STRING, TOKID_CHORD_CSESC, "{ctrl+shift+esc}\tTask Manager");
+    AppendMenu(hChord, MF_STRING, TOKID_CHORD_ALTF4, "{alt+f4}\tClose window");
+    AppendMenu(hChord, MF_STRING, TOKID_CHORD_CAD,   "{ctrl+alt+del}\tSecurity screen");
     AppendMenu(hMenu, MF_POPUP, (UINT_PTR)hChord, "Key Combos");
 
     return hMenu;  /* caller must DestroyMenu() */
@@ -2087,6 +2087,8 @@ static LRESULT CALLBACK AddDlgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lP
                      10,62,390,16,hwnd,NULL,g_hInst,NULL);
         CreateWindow("BUTTON","Insert Key / Combo...",WS_VISIBLE|WS_CHILD|BS_PUSHBUTTON|WS_TABSTOP,
                      10,82,160,22,hwnd,(HMENU)IDC_INSERT_TOKEN,g_hInst,NULL);
+        CreateWindow("STATIC","<-- inserts token at cursor position",WS_VISIBLE|WS_CHILD,
+                     178,86,220,16,hwnd,NULL,g_hInst,NULL);
         CreateWindow("EDIT",edit?bc->text:"",WS_VISIBLE|WS_CHILD|WS_BORDER|WS_TABSTOP|WS_VSCROLL|
                      ES_MULTILINE|ES_AUTOVSCROLL|ES_WANTRETURN,
                      10,114,390,72,hwnd,(HMENU)IDC_TEXT_EDIT,g_hInst,NULL);
@@ -3069,7 +3071,7 @@ static LRESULT CALLBACK MainProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
 
         } else if(id==ID_HELP_ABOUT){
             ShowInfoDialog(hwnd,"About Simple Typer",
-                "Simple Typer\r\nVersion 2.55\r\n\r\n"
+                "Simple Typer\r\nVersion 2.56\r\n\r\n"
                 "Author:   UberGuidoZ\r\n"
                 "Contact:  https://github.com/UberGuidoZ");
 
