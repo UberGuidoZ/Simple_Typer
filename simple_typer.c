@@ -1,5 +1,5 @@
 /*
- * simple_typer.c - Simple Typer v2.50
+ * simple_typer.c - Simple Typer v2.55
  *
  * Each button types its stored text into whatever window had focus before the button was clicked.
  *
@@ -34,7 +34,7 @@
  */
 
 /*
- * v2.50 -- Extended Key Tokens & Chord Support
+ * v2.55 -- Extended Key Tokens & Chord Support
  *
  * New Features
  *   - Expanded system-key token table: {win}, {rwin}, {f1}-{f12}, {space},
@@ -165,6 +165,7 @@ static LRESULT CALLBACK ButtonSubclassProc(HWND hwnd, UINT msg, WPARAM wParam,
 #define IDC_SEARCH_EDIT       60
 #define IDC_HK_KEY            61   /* combobox for hotkey key */
 #define IDC_HK_CLEAR          62
+#define IDC_INSERT_TOKEN      63   /* "Insert Key / Combo..." button in Add dialog */
 
 /* Prompt dialog controls */
 #define IDC_PROMPT_EDIT       50
@@ -1884,6 +1885,177 @@ static void UpdateAddDlgFields(HWND hwnd)
     if (isCat) SendDlgItemMessage(hwnd, IDC_SEP_CHECK, BM_SETCHECK, BST_UNCHECKED, 0);
 }
 
+/* ─── Token-picker: menu IDs (returned via TPM_RETURNCMD) ───────────── */
+#define TOKID_TAB          3001
+#define TOKID_ENTER        3002
+#define TOKID_ESC          3003
+#define TOKID_BACKSPACE    3004
+#define TOKID_DELETE       3005
+#define TOKID_INSERT       3006
+#define TOKID_SPACE        3007
+#define TOKID_UP           3010
+#define TOKID_DOWN         3011
+#define TOKID_LEFT         3012
+#define TOKID_RIGHT        3013
+#define TOKID_HOME         3020
+#define TOKID_END          3021
+#define TOKID_PGUP         3022
+#define TOKID_PGDN         3023
+#define TOKID_F1           3030  /* F2=3031 ... F12=3041 */
+#define TOKID_WIN          3050
+#define TOKID_APPS         3051
+#define TOKID_PRINTSCREEN  3052
+#define TOKID_PAUSE        3053
+#define TOKID_CAPSLOCK     3054
+#define TOKID_NUMLOCK      3055
+#define TOKID_SCROLLLOCK   3056
+#define TOKID_CTRL         3060
+#define TOKID_ALT          3061
+#define TOKID_SHIFT        3062
+#define TOKID_DELAY        3070  /* inserts {delay_500} */
+#define TOKID_CHORD_WINR   3080
+#define TOKID_CHORD_WIND   3081
+#define TOKID_CHORD_WINL   3082
+#define TOKID_CHORD_WINTAB 3083
+#define TOKID_CHORD_CTRLC  3084
+#define TOKID_CHORD_CTRLV  3085
+#define TOKID_CHORD_CTRLZ  3086
+#define TOKID_CHORD_CTRLY  3087
+#define TOKID_CHORD_CTRLA  3088
+#define TOKID_CHORD_CSESC  3089
+#define TOKID_CHORD_ALTF4  3090
+#define TOKID_CHORD_CAD    3091
+
+/* Flat ID -> token-string map (F1-F12 handled separately by range) */
+static const struct { int id; const char *tok; } g_tokMap[] = {
+    {TOKID_TAB,         "{tab}"},
+    {TOKID_ENTER,       "{enter}"},
+    {TOKID_ESC,         "{esc}"},
+    {TOKID_BACKSPACE,   "{backspace}"},
+    {TOKID_DELETE,      "{delete}"},
+    {TOKID_INSERT,      "{insert}"},
+    {TOKID_SPACE,       "{space}"},
+    {TOKID_UP,          "{up}"},
+    {TOKID_DOWN,        "{down}"},
+    {TOKID_LEFT,        "{left}"},
+    {TOKID_RIGHT,       "{right}"},
+    {TOKID_HOME,        "{home}"},
+    {TOKID_END,         "{end}"},
+    {TOKID_PGUP,        "{pgup}"},
+    {TOKID_PGDN,        "{pgdn}"},
+    {TOKID_WIN,         "{win}"},
+    {TOKID_APPS,        "{apps}"},
+    {TOKID_PRINTSCREEN, "{printscreen}"},
+    {TOKID_PAUSE,       "{pause}"},
+    {TOKID_CAPSLOCK,    "{capslock}"},
+    {TOKID_NUMLOCK,     "{numlock}"},
+    {TOKID_SCROLLLOCK,  "{scrolllock}"},
+    {TOKID_CTRL,        "{ctrl}"},
+    {TOKID_ALT,         "{alt}"},
+    {TOKID_SHIFT,       "{shift}"},
+    {TOKID_DELAY,       "{delay_500}"},
+    {TOKID_CHORD_WINR,  "{win+r}"},
+    {TOKID_CHORD_WIND,  "{win+d}"},
+    {TOKID_CHORD_WINL,  "{win+l}"},
+    {TOKID_CHORD_WINTAB,"{win+tab}"},
+    {TOKID_CHORD_CTRLC, "{ctrl+c}"},
+    {TOKID_CHORD_CTRLV, "{ctrl+v}"},
+    {TOKID_CHORD_CTRLZ, "{ctrl+z}"},
+    {TOKID_CHORD_CTRLY, "{ctrl+y}"},
+    {TOKID_CHORD_CTRLA, "{ctrl+a}"},
+    {TOKID_CHORD_CSESC, "{ctrl+shift+esc}"},
+    {TOKID_CHORD_ALTF4, "{alt+f4}"},
+    {TOKID_CHORD_CAD,   "{ctrl+alt+del}"},
+    {0, NULL}
+};
+
+/* Build the categorised Insert Key/Combo popup menu. */
+static HMENU BuildTokenMenu(void)
+{
+    HMENU hMenu  = CreatePopupMenu();
+    HMENU hEdit  = CreatePopupMenu();
+    HMENU hArrow = CreatePopupMenu();
+    HMENU hNav   = CreatePopupMenu();
+    HMENU hFn    = CreatePopupMenu();
+    HMENU hSys   = CreatePopupMenu();
+    HMENU hMod   = CreatePopupMenu();
+    HMENU hChord = CreatePopupMenu();
+
+    /* ── Editing ── */
+    AppendMenu(hEdit, MF_STRING, TOKID_TAB,       "{tab}           - Tab");
+    AppendMenu(hEdit, MF_STRING, TOKID_ENTER,     "{enter}         - Enter / Return");
+    AppendMenu(hEdit, MF_STRING, TOKID_ESC,       "{esc}           - Escape");
+    AppendMenu(hEdit, MF_STRING, TOKID_BACKSPACE, "{backspace}     - Backspace");
+    AppendMenu(hEdit, MF_STRING, TOKID_DELETE,    "{delete}        - Delete");
+    AppendMenu(hEdit, MF_STRING, TOKID_INSERT,    "{insert}        - Insert");
+    AppendMenu(hEdit, MF_STRING, TOKID_SPACE,     "{space}         - Space bar");
+    AppendMenu(hMenu, MF_POPUP, (UINT_PTR)hEdit,  "Editing Keys");
+
+    /* ── Arrows ── */
+    AppendMenu(hArrow, MF_STRING, TOKID_UP,    "{up}");
+    AppendMenu(hArrow, MF_STRING, TOKID_DOWN,  "{down}");
+    AppendMenu(hArrow, MF_STRING, TOKID_LEFT,  "{left}");
+    AppendMenu(hArrow, MF_STRING, TOKID_RIGHT, "{right}");
+    AppendMenu(hMenu,  MF_POPUP, (UINT_PTR)hArrow, "Arrow Keys");
+
+    /* ── Navigation cluster ── */
+    AppendMenu(hNav, MF_STRING, TOKID_HOME, "{home}");
+    AppendMenu(hNav, MF_STRING, TOKID_END,  "{end}");
+    AppendMenu(hNav, MF_STRING, TOKID_PGUP, "{pgup}");
+    AppendMenu(hNav, MF_STRING, TOKID_PGDN, "{pgdn}");
+    AppendMenu(hMenu, MF_POPUP, (UINT_PTR)hNav, "Navigation");
+
+    /* ── Function keys ── */
+    for (int i = 1; i <= 12; i++) {
+        char lbl[8]; snprintf(lbl, sizeof(lbl), "{f%d}", i);
+        AppendMenu(hFn, MF_STRING, TOKID_F1 + i - 1, lbl);
+    }
+    AppendMenu(hMenu, MF_POPUP, (UINT_PTR)hFn, "Function Keys  {f1}-{f12}");
+
+    /* ── Windows & System ── */
+    AppendMenu(hSys, MF_STRING, TOKID_WIN,         "{win}           - Windows key");
+    AppendMenu(hSys, MF_STRING, TOKID_APPS,        "{apps}          - Context Menu key");
+    AppendMenu(hSys, MF_STRING, TOKID_PRINTSCREEN, "{printscreen}   - Print Screen");
+    AppendMenu(hSys, MF_STRING, TOKID_PAUSE,       "{pause}         - Pause / Break");
+    AppendMenu(hSys, MF_STRING, TOKID_CAPSLOCK,    "{capslock}      - Caps Lock");
+    AppendMenu(hSys, MF_STRING, TOKID_NUMLOCK,     "{numlock}       - Num Lock");
+    AppendMenu(hSys, MF_STRING, TOKID_SCROLLLOCK,  "{scrolllock}    - Scroll Lock");
+    AppendMenu(hMenu, MF_POPUP, (UINT_PTR)hSys, "Windows && System");
+
+    /* ── Modifier keys (standalone press) ── */
+    AppendMenu(hMod, MF_STRING, TOKID_CTRL,  "{ctrl}   - Ctrl (standalone press)");
+    AppendMenu(hMod, MF_STRING, TOKID_ALT,   "{alt}    - Alt (standalone press)");
+    AppendMenu(hMod, MF_STRING, TOKID_SHIFT, "{shift}  - Shift (standalone press)");
+    AppendMenu(hMenu, MF_POPUP, (UINT_PTR)hMod, "Modifier Keys");
+
+    AppendMenu(hMenu, MF_SEPARATOR, 0, NULL);
+
+    /* ── Delay ── */
+    AppendMenu(hMenu, MF_STRING, TOKID_DELAY,
+               "{delay_500}   - Pause 500 ms  (edit number after inserting)");
+
+    AppendMenu(hMenu, MF_SEPARATOR, 0, NULL);
+
+    /* ── Key combos ── */
+    AppendMenu(hChord, MF_STRING, TOKID_CHORD_WINR,  "{win+r}           - Open Run dialog");
+    AppendMenu(hChord, MF_STRING, TOKID_CHORD_WIND,  "{win+d}           - Show desktop");
+    AppendMenu(hChord, MF_STRING, TOKID_CHORD_WINL,  "{win+l}           - Lock screen");
+    AppendMenu(hChord, MF_STRING, TOKID_CHORD_WINTAB,"{win+tab}         - Task View");
+    AppendMenu(hChord, MF_SEPARATOR, 0, NULL);
+    AppendMenu(hChord, MF_STRING, TOKID_CHORD_CTRLC, "{ctrl+c}          - Copy");
+    AppendMenu(hChord, MF_STRING, TOKID_CHORD_CTRLV, "{ctrl+v}          - Paste");
+    AppendMenu(hChord, MF_STRING, TOKID_CHORD_CTRLZ, "{ctrl+z}          - Undo");
+    AppendMenu(hChord, MF_STRING, TOKID_CHORD_CTRLY, "{ctrl+y}          - Redo");
+    AppendMenu(hChord, MF_STRING, TOKID_CHORD_CTRLA, "{ctrl+a}          - Select All");
+    AppendMenu(hChord, MF_SEPARATOR, 0, NULL);
+    AppendMenu(hChord, MF_STRING, TOKID_CHORD_CSESC, "{ctrl+shift+esc}  - Task Manager");
+    AppendMenu(hChord, MF_STRING, TOKID_CHORD_ALTF4, "{alt+f4}          - Close window");
+    AppendMenu(hChord, MF_STRING, TOKID_CHORD_CAD,   "{ctrl+alt+del}    - Security screen");
+    AppendMenu(hMenu, MF_POPUP, (UINT_PTR)hChord, "Key Combos");
+
+    return hMenu;  /* caller must DestroyMenu() */
+}
+
 static LRESULT CALLBACK AddDlgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 {
     LRESULT dark = HandleDlgDarkColor(hwnd, msg, wParam, &g_hbrAddBg);
@@ -1913,10 +2085,8 @@ static LRESULT CALLBACK AddDlgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lP
         /* ── Text ── */
         CreateWindow("STATIC","Variables to type: {date} {isodate} {time} {clipboard} {?}",WS_VISIBLE|WS_CHILD,
                      10,62,390,16,hwnd,NULL,g_hInst,NULL);
-        CreateWindow("STATIC","Keys: {tab} {enter} {esc} {backspace} {del} {up} {down}",WS_VISIBLE|WS_CHILD,
-                     10,78,390,16,hwnd,NULL,g_hInst,NULL);
-        CreateWindow("STATIC","{left} {right} {home} {end} {pgup} {pgdn} {delay_####}",WS_VISIBLE|WS_CHILD,
-                     10,94,390,16,hwnd,NULL,g_hInst,NULL);
+        CreateWindow("BUTTON","Insert Key / Combo...",WS_VISIBLE|WS_CHILD|BS_PUSHBUTTON|WS_TABSTOP,
+                     10,82,160,22,hwnd,(HMENU)IDC_INSERT_TOKEN,g_hInst,NULL);
         CreateWindow("EDIT",edit?bc->text:"",WS_VISIBLE|WS_CHILD|WS_BORDER|WS_TABSTOP|WS_VSCROLL|
                      ES_MULTILINE|ES_AUTOVSCROLL|ES_WANTRETURN,
                      10,114,390,72,hwnd,(HMENU)IDC_TEXT_EDIT,g_hInst,NULL);
@@ -2009,6 +2179,34 @@ static LRESULT CALLBACK AddDlgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lP
             SendDlgItemMessage(hwnd,IDC_HK_ALT,  BM_SETCHECK,BST_UNCHECKED,0);
             SendDlgItemMessage(hwnd,IDC_HK_KEY,  CB_SETCURSEL,0,0);
             break;
+
+        case IDC_INSERT_TOKEN: {
+            HMENU hMenu = BuildTokenMenu();
+            RECT r; GetWindowRect(GetDlgItem(hwnd, IDC_INSERT_TOKEN), &r);
+            int cmd = (int)(UINT_PTR)TrackPopupMenu(
+                hMenu,
+                TPM_RETURNCMD | TPM_LEFTALIGN | TPM_TOPALIGN,
+                r.left, r.bottom, 0, hwnd, NULL);
+            DestroyMenu(hMenu);
+            if (!cmd) break;
+
+            /* Resolve cmd -> token string */
+            const char *tok = NULL;
+            char fnBuf[8];
+            if (cmd >= TOKID_F1 && cmd <= TOKID_F1 + 11) {
+                snprintf(fnBuf, sizeof(fnBuf), "{f%d}", cmd - TOKID_F1 + 1);
+                tok = fnBuf;
+            } else {
+                for (int i = 0; g_tokMap[i].tok; i++)
+                    if (g_tokMap[i].id == cmd) { tok = g_tokMap[i].tok; break; }
+            }
+            if (tok) {
+                HWND hEd = GetDlgItem(hwnd, IDC_TEXT_EDIT);
+                SetFocus(hEd);
+                SendMessage(hEd, EM_REPLACESEL, TRUE, (LPARAM)tok);
+            }
+            break;
+        }
 
         case IDC_OK: {
             BOOL isSep = (SendDlgItemMessage(hwnd,IDC_SEP_CHECK,BM_GETCHECK,0,0)==BST_CHECKED);
@@ -2871,7 +3069,7 @@ static LRESULT CALLBACK MainProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
 
         } else if(id==ID_HELP_ABOUT){
             ShowInfoDialog(hwnd,"About Simple Typer",
-                "Simple Typer\r\nVersion 2.50\r\n\r\n"
+                "Simple Typer\r\nVersion 2.55\r\n\r\n"
                 "Author:   UberGuidoZ\r\n"
                 "Contact:  https://github.com/UberGuidoZ");
 
