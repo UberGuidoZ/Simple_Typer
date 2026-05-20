@@ -2,7 +2,7 @@
 Simple Typer shows a list of customizable buttons with optional organization.<br>
 Click a button to type the stored keystrokes into whatever window previously had focus.
 
-Features:
+ * Features:
  * INI-configured buttons; each button types text into the last focused window
  * Optional per-button custom border color (via color picker)
  * Dark mode, configurable font size and window width
@@ -21,7 +21,8 @@ Features:
  * Categories - collapsible group headers to organise buttons
  * Keyboard shortcuts - optional global hotkey per button
  * Multiple profiles - switchable INI sets from tray or Profiles menu
- * System key tokens - {tab} {enter} {esc} etc. send keystrokes mid-text
+ * System key tokens - {tab} {enter} {esc} {win} {f1}-{f12} etc. send keystrokes mid-text
+ * Chord tokens - {win+r} {ctrl+shift+esc} {alt+f4} etc. send key combos mid-text
  * Delay token - {delay_####} pauses output for #### milliseconds mid-sequence
  * Undo Delete - Ctrl+Z or right-click restores the last deleted button
  * Export / Import buttons to and from a portable INI snippet file
