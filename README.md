@@ -34,7 +34,10 @@ Main Window<br>
 ![Main Window](https://raw.githubusercontent.com/UberGuidoZ/Simple_Typer/refs/heads/main/Documentation/1-Main_Window.png)
 
 Add Button<br>
-![Add Button](https://raw.githubusercontent.com/UberGuidoZ/Simple_Typer/refs/heads/main/Documentation/5-Button_Add.png)
+![Add Button](https://raw.githubusercontent.com/UberGuidoZ/Simple_Typer/refs/heads/main/Documentation/5-Add_Button.png)
+
+Insert Keystrokes
+![Insert_Key](https://raw.githubusercontent.com/UberGuidoZ/Simple_Typer/refs/heads/main/Documentation/6-Add_Button_Keys.png)
 
 Settings<br>
 ![Settings](https://raw.githubusercontent.com/UberGuidoZ/Simple_Typer/refs/heads/main/Documentation/2-Settings.png)
